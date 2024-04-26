@@ -22,10 +22,14 @@ async fn index() -> impl Responder {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
-	App::new().service(
+	App::new()
+	.service(hello)
+	.service(echo)
+	.service(
 	    web::scope("/app")
 		.route("/index.html", web::get().to(index))
 	)
+	.route("/hey", web::get().to(manual_hello))
     })
 	.bind(("0.0.0.0", 8080))?
 	.run()
