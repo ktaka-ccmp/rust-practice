@@ -3,6 +3,7 @@ use reqwest::StatusCode;
 use std::net::SocketAddr;
 
 use serde::Deserialize;
+use askama_axum::Template;
 
 #[derive(Deserialize)]
 pub struct GeoResponse {
@@ -28,7 +29,6 @@ async fn fetch_lat_long(city: &str) -> Result<LatLong, Box<dyn std::error::Error
     }
 }
 
-
 async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, Box<dyn std::error::Error>> {
 	let endpoint = format!(
     	"https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&hourly=temperature_2m",
@@ -42,25 +42,6 @@ async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, Box<dyn std
 pub struct WeatherQuery {
     pub city: String,
 }
-
-async fn weather(Query(params): Query<WeatherQuery>) -> Result<String, StatusCode> {
-    // match fetch_lat_long(&params.city).await {
-    //     Ok(lat_long) => Ok(format!("{}: {}, {}", params.city, lat_long.latitude, lat_long.longitude)),
-    //     Err(_) => Err(StatusCode::NOT_FOUND),
-    // }
-    let lat_long = fetch_lat_long(&params.city).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let display = WeatherDisplay {
-        city: params.city,
-        forecasts: weather.hourly.time.iter().zip(weather.hourly.temperature_2m.iter()).map(|(time, temp)|
-            Forecast {
-                date: time.to_string(),
-                temperature: temp.to_string(),
-            }).collect(),
-    };
-    Ok(format!("{:?}", display))
-}
-
 
 #[derive(Deserialize, Debug)]
 pub struct WeatherResponse {
@@ -76,7 +57,8 @@ pub struct Hourly {
 	pub temperature_2m: Vec<f64>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Template, Deserialize, Debug)]
+#[template(path = "weather.html")]
 pub struct WeatherDisplay {
 	pub city: String,
 	pub forecasts: Vec<Forecast>,
@@ -88,8 +70,40 @@ pub struct Forecast {
 	pub temperature: String,
 }
 
-async fn index() -> &'static str {
-    "Index\n"
+
+impl WeatherDisplay {
+    fn new(city: String, weather: WeatherResponse) -> Self {
+        let display = WeatherDisplay {
+            city,
+            forecasts: weather.hourly.time.iter().zip(weather.hourly.temperature_2m.iter()).map(|(time, temp)|
+            Forecast {
+                date: time.to_string(),
+                temperature: temp.to_string(),
+            }).collect(),
+        };
+        display
+    }
+}
+
+async fn weather(Query(params): Query<WeatherQuery>) -> Result<WeatherDisplay, StatusCode> {
+    // match fetch_lat_long(&params.city).await {
+    //     Ok(lat_long) => Ok(format!("{}: {}, {}", params.city, lat_long.latitude, lat_long.longitude)),
+    //     Err(_) => Err(StatusCode::NOT_FOUND),
+    // }
+    let lat_long = fetch_lat_long(&params.city).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // let display = WeatherDisplay::new(params.city, weather);
+    // Ok(format!("{:?}", display))
+    Ok(WeatherDisplay::new(params.city, weather))
+}
+
+
+#[derive(Template)]
+#[template(path = "index.html")]
+struct IndexTemplate;
+
+async fn index() -> IndexTemplate {
+	IndexTemplate
 }
 
 async fn weathers() -> &'static str {
