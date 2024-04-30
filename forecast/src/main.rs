@@ -1,16 +1,20 @@
-use axum::{routing::get, Router, extract::Query};
+use axum::{routing::get, Router, async_trait, extract::{Query, State, FromRequestParts}, http::request::Parts};
+
 use reqwest::StatusCode;
 use std::net::SocketAddr;
+use std::str::from_utf8;
 
 use serde::Deserialize;
 use askama_axum::Template;
+use sqlx::{Error as SqlxError, PgPool};
+
+use base64::{Engine as _, engine::general_purpose as BASE64};
 
 #[derive(Deserialize)]
 pub struct GeoResponse {
     pub results: Vec<LatLong>,
 }
-
-#[derive(Deserialize, Debug, Clone)]
+#[derive(sqlx::FromRow, Deserialize, Debug, Clone)]
 pub struct LatLong {
     pub latitude: f64,
     pub longitude: f64,
@@ -27,6 +31,29 @@ async fn fetch_lat_long(city: &str) -> Result<LatLong, Box<dyn std::error::Error
         Some(lat_long) => Ok(lat_long.clone()),
         None => Err("No results found".into()),
     }
+}
+
+async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, Box<dyn std::error::Error>> {
+	let lat_long = sqlx::query_as::<_, LatLong>(
+    	"SELECT lat::FLOAT8 AS latitude, long::FLOAT8 AS longitude FROM cities WHERE name = $1",
+	)
+	.bind(name)
+	.fetch_optional(pool)
+	.await.unwrap();
+
+	if let Some(lat_long) = lat_long {
+    	return Ok(lat_long);
+	}
+
+	let lat_long = fetch_lat_long(name).await?;
+	sqlx::query("INSERT INTO cities (name, lat, long) VALUES ($1, $2, $3)")
+    	.bind(name)
+    	.bind(lat_long.latitude)
+    	.bind(lat_long.longitude)
+    	.execute(pool)
+    	.await?;
+
+	Ok(lat_long)
 }
 
 async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, Box<dyn std::error::Error>> {
@@ -85,18 +112,20 @@ impl WeatherDisplay {
     }
 }
 
-async fn weather(Query(params): Query<WeatherQuery>) -> Result<WeatherDisplay, StatusCode> {
-    // match fetch_lat_long(&params.city).await {
-    //     Ok(lat_long) => Ok(format!("{}: {}, {}", params.city, lat_long.latitude, lat_long.longitude)),
-    //     Err(_) => Err(StatusCode::NOT_FOUND),
-    // }
-    let lat_long = fetch_lat_long(&params.city).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    // let display = WeatherDisplay::new(params.city, weather);
-    // Ok(format!("{:?}", display))
-    Ok(WeatherDisplay::new(params.city, weather))
-}
+// async fn weather(Query(params): Query<WeatherQuery>) -> Result<WeatherDisplay, StatusCode> {
+//     let lat_long = fetch_lat_long(&params.city).await.map_err(|_| StatusCode::NOT_FOUND)?;
+//     let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+//     Ok(WeatherDisplay::new(params.city, weather))
+// }
 
+async fn weather(
+	Query(params): Query<WeatherQuery>,
+	State(pool): State<PgPool>,
+) -> Result<WeatherDisplay, StatusCode> {
+	let lat_long = get_lat_long(&pool, &params.city).await.map_err(|_| StatusCode::NOT_FOUND)?;
+	let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+	Ok(WeatherDisplay::new(params.city, weather))
+}
 
 #[derive(Template)]
 #[template(path = "index.html")]
@@ -106,21 +135,101 @@ async fn index() -> IndexTemplate {
 	IndexTemplate
 }
 
-async fn weathers() -> &'static str {
-    "Weathers"
+
+/// A user that is authorized to access the stats endpoint.
+///
+/// No fields are required, we just need to know that the user is authorized. In
+/// a production application you would probably want to have some kind of user
+/// ID or similar here.
+struct User;
+
+#[async_trait]
+impl<S> FromRequestParts<S> for User
+where
+	S: Send + Sync,
+{
+	type Rejection = axum::http::Response<axum::body::Body>;
+
+	async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+    	let auth_header = parts
+        	.headers
+        	.get("Authorization")
+        	.and_then(|header| header.to_str().ok());
+
+    	if let Some(auth_header) = auth_header {
+        	if auth_header.starts_with("Basic ") {
+            	let credentials = auth_header.trim_start_matches("Basic ");
+				let decoded = BASE64::STANDARD.decode(credentials).unwrap();
+            	let credential_str = from_utf8(&decoded).unwrap_or("");
+
+            	// Our username and password are hardcoded here.
+            	// In a real app, you'd want to read them from the environment.
+            	if credential_str == "forecast:forecast" {
+                	return Ok(User);
+            	}
+        	}
+    	}
+
+    	let reject_response = axum::http::Response::builder()
+        	.status(StatusCode::UNAUTHORIZED)
+        	.header(
+            	"WWW-Authenticate",
+            	"Basic realm=\"Please enter your credentials\"",
+        	)
+        	.body(axum::body::Body::from("Unauthorized"))
+        	.unwrap();
+
+    	Err(reject_response)
+	}
 }
 
-async fn stats() -> &'static str {
-    "Stats"
+// async fn stats(_user: User) -> &'static str {
+// 	"We're authorized!"
+// }
+#[derive(Template)]
+#[template(path = "stats.html")]
+struct StatsTemplate {
+	pub cities: Vec<City>,
+}
+
+#[derive(Deserialize, Debug, sqlx::FromRow)]
+pub struct City {
+	pub name: String,
+}
+
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum DbError {
+    #[error("Database error")]
+    DatabaseError(#[from] SqlxError),
+    #[error("Data not found")]
+    NotFound,
+    // Add other error types as needed
+}
+
+async fn get_last_cities(pool: &PgPool) -> Result<Vec<City>, DbError> {
+    let cities = sqlx::query_as::<_, City>("SELECT name FROM cities ORDER BY id DESC LIMIT 10")
+        .fetch_all(pool)
+        .await?;
+    Ok(cities)
+}
+
+async fn stats(_user: User, State(pool): State<PgPool>) -> Result<StatsTemplate, StatusCode> {
+	let cities = get_last_cities(&pool).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+	Ok(StatsTemplate { cities })
 }
 
 #[tokio::main]
 async fn main() {
+    let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+	let pool = sqlx::PgPool::connect(&db_connection_str).await.expect("Failed to connect to Postgres");
+
     let app = Router::new()
         .route("/", get(index))
         .route("/weather", get(weather))
-        .route("/weathers", get(weathers))
-        .route("/stats", get(stats));
+        .route("/stats", get(stats))
+        .with_state(pool);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
