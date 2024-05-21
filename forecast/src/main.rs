@@ -1,4 +1,5 @@
 use axum::{routing::get, Router, async_trait, extract::{Query, State, FromRequestParts}, http::request::Parts};
+use axum::response::{IntoResponse, Html};
 
 use reqwest::StatusCode;
 use std::net::SocketAddr;
@@ -9,6 +10,7 @@ use askama_axum::Template;
 use sqlx::{Error as SqlxError, PgPool};
 
 use base64::{Engine as _, engine::general_purpose as BASE64};
+use thiserror::Error;
 
 #[derive(Deserialize)]
 pub struct GeoResponse {
@@ -18,6 +20,78 @@ pub struct GeoResponse {
 pub struct LatLong {
     pub latitude: f64,
     pub longitude: f64,
+}
+
+#[derive(Deserialize)]
+pub struct WeatherQuery {
+    pub city: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct WeatherResponse {
+	pub latitude: f64,
+	pub longitude: f64,
+	pub timezone: String,
+	pub hourly: Hourly,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Hourly {
+	pub time: Vec<String>,
+	pub temperature_2m: Vec<f64>,
+}
+
+#[derive(Template, Deserialize, Debug)]
+#[template(path = "weather.html")]
+pub struct WeatherDisplay {
+	pub city: String,
+	pub forecasts: Vec<Forecast>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Forecast {
+	pub date: String,
+	pub temperature: String,
+}
+
+impl WeatherDisplay {
+    fn new(city: String, weather: WeatherResponse) -> Self {
+		WeatherDisplay {
+            city,
+            forecasts: weather.hourly.time.iter().zip(weather.hourly.temperature_2m.iter()).map(|(time, temp)|
+            Forecast {
+                date: time.to_string(),
+                temperature: temp.to_string(),
+            }).collect(),
+        }
+    }
+}
+
+#[derive(Template)]
+#[template(path = "index.html")]
+struct IndexTemplate;
+
+#[derive(Template)]
+#[template(path = "stats.html")]
+struct StatsTemplate {
+	pub cities: Vec<City>,
+}
+
+#[derive(Deserialize, Debug, sqlx::FromRow)]
+pub struct City {
+	pub name: String,
+}
+
+#[derive(Error, Debug)]
+pub enum DbError {
+    #[error("Database error")]
+    DatabaseError(#[from] SqlxError),
+    #[error("City not found")]
+    NotFound,
+}
+
+async fn index() -> IndexTemplate {
+	IndexTemplate
 }
 
 async fn fetch_lat_long(city: &str) -> Result<LatLong, Box<dyn std::error::Error>> {
@@ -74,53 +148,6 @@ async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, reqwest::Er
 	Ok(response)
 }
 
-#[derive(Deserialize)]
-pub struct WeatherQuery {
-    pub city: String,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct WeatherResponse {
-	pub latitude: f64,
-	pub longitude: f64,
-	pub timezone: String,
-	pub hourly: Hourly,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Hourly {
-	pub time: Vec<String>,
-	pub temperature_2m: Vec<f64>,
-}
-
-#[derive(Template, Deserialize, Debug)]
-#[template(path = "weather.html")]
-pub struct WeatherDisplay {
-	pub city: String,
-	pub forecasts: Vec<Forecast>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct Forecast {
-	pub date: String,
-	pub temperature: String,
-}
-
-impl WeatherDisplay {
-    fn new(city: String, weather: WeatherResponse) -> Self {
-		WeatherDisplay {
-            city,
-            forecasts: weather.hourly.time.iter().zip(weather.hourly.temperature_2m.iter()).map(|(time, temp)|
-            Forecast {
-                date: time.to_string(),
-                temperature: temp.to_string(),
-            }).collect(),
-        }
-    }
-}
-
-use axum::response::{IntoResponse, Html};
-
 async fn weather(
 	Query(params): Query<WeatherQuery>,
 	State(pool): State<PgPool>,
@@ -133,14 +160,6 @@ async fn weather(
 	let weather = fetch_weather(lat_long).await.map_err(|_| Html("Internal server error".to_string()))?;
 	let weather_display = WeatherDisplay::new(params.city, weather);
 	Ok(weather_display.into_response())
-}
-
-#[derive(Template)]
-#[template(path = "index.html")]
-struct IndexTemplate;
-
-async fn index() -> IndexTemplate {
-	IndexTemplate
 }
 
 struct User;
@@ -183,27 +202,6 @@ where
 
     	Err(reject_response)
 	}
-}
-
-#[derive(Template)]
-#[template(path = "stats.html")]
-struct StatsTemplate {
-	pub cities: Vec<City>,
-}
-
-#[derive(Deserialize, Debug, sqlx::FromRow)]
-pub struct City {
-	pub name: String,
-}
-
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum DbError {
-    #[error("Database error")]
-    DatabaseError(#[from] SqlxError),
-    #[error("City not found")]
-    NotFound,
 }
 
 async fn get_last_cities(pool: &PgPool) -> Result<Vec<City>, DbError> {
