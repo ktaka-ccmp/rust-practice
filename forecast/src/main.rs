@@ -33,7 +33,7 @@ async fn fetch_lat_long(city: &str) -> Result<LatLong, Box<dyn std::error::Error
     }
 }
 
-async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, Box<dyn std::error::Error>> {
+async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, DbError> {
 	let lat_long = sqlx::query_as::<_, LatLong>(
     	"SELECT lat::FLOAT8 AS latitude, long::FLOAT8 AS longitude FROM cities WHERE name = $1",
 	)
@@ -45,15 +45,14 @@ async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, Box<dyn std:
     	return Ok(lat_long);
 	}
 
+	// let lat_long = fetch_lat_long(name).await.map_err(|_| DbError::NotFound)?;
 	let lat_long = match fetch_lat_long(name).await {
 		Ok(lat_long) => lat_long,
 		Err(e) => {
 			println!("Error:City not found: {:?}", e);
-			return Err(e);
+			return Err(DbError::NotFound);
 		},
-	};	
-	// let lat_long = fetch_lat_long(name).await.expect("City not found");
-	// let lat_long = fetch_lat_long(name).await.map_err(|_| "City not found")?;
+	};
 
 	println!("Inserting into database");
 	sqlx::query("INSERT INTO cities (name, lat, long) VALUES ($1, $2, $3)")
@@ -66,7 +65,7 @@ async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, Box<dyn std:
 	Ok(lat_long)
 }
 
-async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, Box<dyn std::error::Error>> {
+async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, reqwest::Error> {
 	let endpoint = format!(
     	"https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&hourly=temperature_2m",
     	lat_long.latitude, lat_long.longitude
@@ -109,42 +108,33 @@ pub struct Forecast {
 
 impl WeatherDisplay {
     fn new(city: String, weather: WeatherResponse) -> Self {
-        let display = WeatherDisplay {
+		WeatherDisplay {
             city,
             forecasts: weather.hourly.time.iter().zip(weather.hourly.temperature_2m.iter()).map(|(time, temp)|
             Forecast {
                 date: time.to_string(),
                 temperature: temp.to_string(),
             }).collect(),
-        };
-        display
+        }
     }
 }
 
-// async fn weather(Query(params): Query<WeatherQuery>) -> Result<WeatherDisplay, StatusCode> {
-//     let lat_long = fetch_lat_long(&params.city).await.map_err(|_| StatusCode::NOT_FOUND)?;
-//     let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-//     Ok(WeatherDisplay::new(params.city, weather))
-// }
+use axum::response::{IntoResponse, Html};
 
 async fn weather(
 	Query(params): Query<WeatherQuery>,
 	State(pool): State<PgPool>,
-) -> Result<WeatherDisplay, StatusCode> {
-	let lat_long = get_lat_long(&pool, &params.city).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-	let weather = fetch_weather(lat_long).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-	Ok(WeatherDisplay::new(params.city, weather))
+	) -> Result<impl IntoResponse, Html<String>> {
+		let lat_long = match get_lat_long(&pool, &params.city).await {
+		Ok(lat_long) => lat_long,
+		Err(DbError::NotFound) => return Err(Html("City not found".to_string())),
+		Err(_) => return Err(Html("Internal server error".to_string())),
+	};
+	let weather = fetch_weather(lat_long).await.map_err(|_| Html("Internal server error".to_string()))?;
+	let weather_display = WeatherDisplay::new(params.city, weather);
+	Ok(weather_display.into_response())
 }
-	// let lat_long = get_lat_long(&pool, &params.city).await.map_err(|_| "City not found".to_string())?;
-	// let lat_long = match get_lat_long(&pool, &params.city).await {
-	// 	Ok(lat_long) => lat_long,
-	// 	Err(e) => {
-	// 		println!("Error: {:?}", e);
-	// 		return Err(StatusCode::INTERNAL_SERVER_ERROR);
-	// 	},
-	// };
 
-	
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate;
@@ -153,12 +143,6 @@ async fn index() -> IndexTemplate {
 	IndexTemplate
 }
 
-
-/// A user that is authorized to access the stats endpoint.
-///
-/// No fields are required, we just need to know that the user is authorized. In
-/// a production application you would probably want to have some kind of user
-/// ID or similar here.
 struct User;
 
 #[async_trait]
@@ -201,9 +185,6 @@ where
 	}
 }
 
-// async fn stats(_user: User) -> &'static str {
-// 	"We're authorized!"
-// }
 #[derive(Template)]
 #[template(path = "stats.html")]
 struct StatsTemplate {
@@ -221,9 +202,8 @@ use thiserror::Error;
 pub enum DbError {
     #[error("Database error")]
     DatabaseError(#[from] SqlxError),
-    #[error("Data not found")]
+    #[error("City not found")]
     NotFound,
-    // Add other error types as needed
 }
 
 async fn get_last_cities(pool: &PgPool) -> Result<Vec<City>, DbError> {
