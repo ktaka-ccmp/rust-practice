@@ -12,6 +12,8 @@ use sqlx::{Error as SqlxError, PgPool};
 use base64::{Engine as _, engine::general_purpose as BASE64};
 use thiserror::Error;
 
+use dotenv::dotenv;
+
 #[derive(Deserialize)]
 pub struct GeoResponse {
     pub results: Vec<LatLong>,
@@ -100,11 +102,7 @@ async fn fetch_lat_long(city: &str) -> Result<LatLong, Box<dyn std::error::Error
         city
     );
     let response = reqwest::get(&endpoint).await?.json::<GeoResponse>().await?;
-    // response.results.get(0).cloned().ok_or("No results found".into())
-    match response.results.get(0) {
-        Some(lat_long) => Ok(lat_long.clone()),
-        None => Err("No results found".into()),
-    }
+	response.results.get(0).cloned().ok_or_else(|| "No results found".into())
 }
 
 async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, DbError> {
@@ -119,16 +117,9 @@ async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, DbError> {
     	return Ok(lat_long);
 	}
 
-	// let lat_long = fetch_lat_long(name).await.map_err(|_| DbError::NotFound)?;
-	let lat_long = match fetch_lat_long(name).await {
-		Ok(lat_long) => lat_long,
-		Err(e) => {
-			println!("Error:City not found: {:?}", e);
-			return Err(DbError::NotFound);
-		},
-	};
+	let lat_long = fetch_lat_long(name).await.map_err(|_| DbError::NotFound)?;
 
-	println!("Inserting into database");
+	println!("Inserting {} into database", name);
 	sqlx::query("INSERT INTO cities (name, lat, long) VALUES ($1, $2, $3)")
     	.bind(name)
     	.bind(lat_long.latitude)
@@ -218,8 +209,8 @@ async fn stats(_user: User, State(pool): State<PgPool>) -> Result<StatsTemplate,
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-	// let pool = sqlx::PgPool::connect(&db_connection_str).await.expect("Failed to connect to Postgres");
+	dotenv().ok();
+	let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 	let pool = sqlx::PgPool::connect(&db_connection_str).await?;
 
     let app = Router::new()
