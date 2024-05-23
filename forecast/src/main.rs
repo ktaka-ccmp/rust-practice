@@ -19,6 +19,8 @@ use base64::{engine::general_purpose as BASE64, Engine as _};
 use thiserror::Error;
 
 use dotenv::dotenv;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber;
 
 #[derive(Deserialize)]
 pub struct GeoResponse {
@@ -231,6 +233,9 @@ async fn stats(_user: User, State(pool): State<PgPool>) -> Result<StatsTemplate,
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
+	// tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).init();
+
     dotenv().ok();
     let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = sqlx::PgPool::connect(&db_connection_str).await?;
@@ -239,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(index))
         .route("/weather", get(weather))
         .route("/stats", get(stats))
+		.layer(TraceLayer::new_for_http())
         .with_state(pool);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
