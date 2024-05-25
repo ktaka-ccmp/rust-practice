@@ -13,7 +13,13 @@ use std::str::from_utf8;
 
 use askama_axum::Template;
 use serde::Deserialize;
-use sqlx::{Error as SqlxError, PgPool};
+use sqlx::{
+    Error as SqlxError,
+    // PgPool as Pool,
+    sqlite::SqlitePool as Pool,
+};
+
+// use sqlx::sqlite::SqlitePool as Pool;
 
 use base64::{engine::general_purpose as BASE64, Engine as _};
 use thiserror::Error;
@@ -122,9 +128,10 @@ async fn fetch_lat_long(city: &str) -> Result<LatLong, Box<dyn std::error::Error
         .ok_or_else(|| "No results found".into())
 }
 
-async fn get_lat_long(pool: &PgPool, name: &str) -> Result<LatLong, DbError> {
+async fn get_lat_long(pool: &Pool, name: &str) -> Result<LatLong, DbError> {
     let lat_long = sqlx::query_as::<_, LatLong>(
-        "SELECT lat::FLOAT8 AS latitude, long::FLOAT8 AS longitude FROM cities WHERE name = $1",
+        // "SELECT lat::FLOAT8 AS latitude, long::FLOAT8 AS longitude FROM cities WHERE name = $1",
+        "SELECT lat AS latitude, long AS longitude FROM cities WHERE name = $1",
     )
     .bind(name)
     .fetch_optional(pool)
@@ -161,12 +168,13 @@ async fn fetch_weather(lat_long: LatLong) -> Result<WeatherResponse, reqwest::Er
 
 async fn weather(
     Query(params): Query<WeatherQuery>,
-    State(pool): State<PgPool>,
+    State(pool): State<Pool>,
 ) -> Result<impl IntoResponse, Html<String>> {
     let lat_long = match get_lat_long(&pool, &params.city).await {
         Ok(lat_long) => lat_long,
         Err(DbError::NotFound) => return Err(Html("City not found".to_string())),
-        Err(_) => return Err(Html("Internal server error".to_string())),
+        Err(e) => return Err(Html(e.to_string())),
+        // Err(_) => return Err(Html("Internal server error".to_string())),
     };
     let weather = fetch_weather(lat_long)
         .await
@@ -217,14 +225,14 @@ where
     }
 }
 
-async fn get_last_cities(pool: &PgPool) -> Result<Vec<City>, DbError> {
+async fn get_last_cities(pool: &Pool) -> Result<Vec<City>, DbError> {
     let cities = sqlx::query_as::<_, City>("SELECT name FROM cities ORDER BY id DESC LIMIT 10")
         .fetch_all(pool)
         .await?;
     Ok(cities)
 }
 
-async fn stats(_user: User, State(pool): State<PgPool>) -> Result<StatsTemplate, StatusCode> {
+async fn stats(_user: User, State(pool): State<Pool>) -> Result<StatsTemplate, StatusCode> {
     let cities = get_last_cities(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -238,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     dotenv().ok();
     let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = sqlx::PgPool::connect(&db_connection_str).await?;
+    let pool = Pool::connect(&db_connection_str).await?;
 
     let app = Router::new()
         .route("/", get(index))
