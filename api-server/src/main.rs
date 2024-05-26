@@ -57,7 +57,10 @@ async fn customers(
     let customers = sqlx::query_as::<_, Customer>("SELECT * FROM customer")
         .fetch_all(&pool)
         .await
-        .map_err(|e| Json(Error {error: format!("{:?}", e)}).into_response())?;
+        .map_err(|e| {
+            tracing::error!("DbError: {:?}", e);
+            Json(Error {error: format!("{:?}", e)}).into_response()
+        })?;
     Ok(Json(customers))
 }
 
@@ -69,6 +72,9 @@ async fn customer(
         .bind(id)
         .fetch_one(&pool)
         .await
-        .map_err(|e| Json(Error {error: format!("{:?}", e)}).into_response())?;
+        .map_err(|e| {
+            tracing::error!("DbError: {:?}", e);
+            Json(Error {error: format!("{:?}", e)}).into_response()
+        })?;
     Ok(Json(customer))
 }
