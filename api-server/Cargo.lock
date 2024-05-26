@@ -44,6 +44,7 @@ dependencies = [
  "dotenv",
  "serde",
  "sqlx",
+ "thiserror",
  "tokio",
  "tower-http",
  "tracing",
