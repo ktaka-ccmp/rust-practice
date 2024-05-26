@@ -3,9 +3,8 @@ use axum::{
     response::{Html, IntoResponse, Json, Response},
     routing::get,
     Router,
-    // Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::net::SocketAddr;
 use sqlx::{
     sqlite::SqlitePool as Pool, FromRow};
@@ -14,11 +13,16 @@ use dotenv::dotenv;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber;
 
-#[derive(FromRow, Deserialize, Serialize, Debug, Clone)]
+#[derive(FromRow, Serialize)]
 pub struct Customer {
     pub id: i32,
     pub name: String,
     pub email: String,
+}
+
+#[derive(Serialize)]
+struct Error {
+    error: String,
 }
 
 #[tokio::main]
@@ -45,11 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn index() -> Html<&'static str> {
     Html("<h1>Welcome to the customer database</h1>")
-}
-
-#[derive(Serialize)]
-struct Error {
-    error: String,
 }
 
 async fn customers(
