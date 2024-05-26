@@ -1,0 +1,17 @@
+[package]
+name = "api-server-swagger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+sqlx = { version = "0.5", features = ["runtime-tokio-rustls", "sqlite", "macros"] }
+dotenv = "0.15"
+tower-http = { version = "0.3", features = ["trace"] }
+tracing-subscriber = "0.2"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+utoipa = "2.4.2"
+utoipa-swagger-ui = { version = "2.0", features = ["axum"] }
+tower = "0.4"

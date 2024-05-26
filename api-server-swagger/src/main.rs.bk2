@@ -1,0 +1,117 @@
+use axum::{
+    extract::{Path, Extension},
+    response::{Html, IntoResponse, Json, Response},
+    routing::get,
+    Router,
+};
+use serde::Serialize;
+use std::net::SocketAddr;
+use sqlx::{sqlite::SqlitePool as Pool, FromRow};
+use dotenv::dotenv;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber;
+use utoipa::{ToSchema, OpenApi};
+use utoipa_swagger_ui::SwaggerUi;
+use tracing::info;
+use tower::ServiceBuilder;
+
+#[derive(FromRow, Serialize, ToSchema)]
+pub struct Customer {
+    pub id: i32,
+    pub name: String,
+    pub email: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct Error {
+    error: String,
+}
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        index,
+        customers,
+        customer
+    ),
+    components(
+        schemas(Customer, Error)
+    )
+)]
+struct ApiDoc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
+
+    dotenv().ok();
+    let db_connection_str = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pool = Pool::connect(&db_connection_str).await?;
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/customers", get(customers))
+        .route("/customer/:id", get(customer))
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
+        .layer(TraceLayer::new_for_http())
+        .layer(ServiceBuilder::new().layer(Extension(pool)));
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    info!("Listening on {}", addr);
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await?;
+    Ok(())
+}
+
+#[utoipa::path(
+    get,
+    path = "/",
+    responses(
+        (status = 200, description = "Welcome to the customer database", body = String)
+    )
+)]
+async fn index() -> Html<&'static str> {
+    Html("<h1>Welcome to the customer database</h1>")
+}
+
+#[utoipa::path(
+    get,
+    path = "/customers",
+    responses(
+        (status = 200, description = "List of customers", body = [Customer])
+    )
+)]
+async fn customers(Extension(pool): Extension<Pool>) -> Result<Json<Vec<Customer>>, Response> {
+    let customers = sqlx::query_as::<_, Customer>("SELECT * FROM customer")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("DbError: {:?}", e);
+            Json(Error { error: format!("{:?}", e) }).into_response()
+        })?;
+    Ok(Json(customers))
+}
+
+#[utoipa::path(
+    get,
+    path = "/customer/{id}",
+    params(
+        ("id" = i32, Path, description = "Customer ID")
+    ),
+    responses(
+        (status = 200, description = "Get customer by ID", body = Customer),
+        (status = 404, description = "Customer not found", body = Error)
+    )
+)]
+async fn customer(Path(id): Path<i32>, Extension(pool): Extension<Pool>) -> Result<Json<Customer>, Response> {
+    let customer = sqlx::query_as::<_, Customer>("SELECT * FROM customer WHERE id = ?")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("DbError: {:?}", e);
+            Json(Error { error: format!("{:?}", e) }).into_response()
+        })?;
+    Ok(Json(customer))
+}
