@@ -15,8 +15,8 @@ use askama_axum::Template;
 use serde::Deserialize;
 use sqlx::{
     Error as SqlxError,
-    // PgPool as Pool,
-    sqlite::SqlitePool as Pool,
+    PgPool as Pool,
+    // sqlite::SqlitePool as Pool,
 };
 
 // use sqlx::sqlite::SqlitePool as Pool;
@@ -239,6 +239,33 @@ async fn stats(_user: User, State(pool): State<Pool>) -> Result<StatsTemplate, S
     Ok(StatsTemplate { cities })
 }
 
+#[derive(Deserialize, Debug, sqlx::FromRow)]
+pub struct CityLatLong {
+    pub name: String,
+    pub lat: f64,
+    pub long: f64,
+}
+
+#[derive(Template)]
+#[template(path = "cities.html")]
+struct CitiesTemplate {
+    pub cities: Vec<CityLatLong>,
+}
+
+async fn get_all_cities(pool: &Pool) -> Result<Vec<CityLatLong>, DbError> {
+    let cities = sqlx::query_as::<_, CityLatLong>("SELECT name, lat, long FROM cities")
+        .fetch_all(pool)
+        .await?;
+    Ok(cities)
+}
+
+async fn cities(State(pool): State<Pool>) -> Result<CitiesTemplate, StatusCode> {
+    let cities = get_all_cities(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(CitiesTemplate { cities })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG).init();
@@ -252,6 +279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(index))
         .route("/weather", get(weather))
         .route("/stats", get(stats))
+        .route("/cities", get(cities))
 		.layer(TraceLayer::new_for_http())
         .with_state(pool);
 
