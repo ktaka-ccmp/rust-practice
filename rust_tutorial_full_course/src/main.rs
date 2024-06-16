@@ -415,7 +415,13 @@ fn struct_example(){
 
     println!("Area of Rect: {}", rec.area());
     println!("Area of Circle: {}", circ.area());
+}
 
+mod restaurant;
+use crate::restaurant::order_food;
+
+fn modules_examle(){
+    order_food();
 }
 
 fn main() {
@@ -436,6 +442,7 @@ fn main() {
     // generic_example();
     // ownership();
     // hashmaps();
-    struct_example();
+    // struct_example();
+    modules_examle();
 }
 
