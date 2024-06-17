@@ -3,7 +3,8 @@
 use core::num;
 use core::prelude::v1;
 use std::fmt::Arguments;
-use std::{array, io};
+use std::process::Output;
+use std::{array, error, io, iter, path, result};
 use rand::Rng;
 use std::io::{Write, BufRead, BufReader,ErrorKind};
 use std::fs::File;
@@ -424,6 +425,209 @@ fn modules_examle(){
     order_food();
 }
 
+fn error_handling(){
+    // panic!("Crash and burn");
+    let lil_arr = [1, 2, 3];
+    // println!("{}", lil_arr[10]);
+
+    let path = "lines.txt";
+    let output = File::create(path);
+    let mut output = match output {
+        Ok(file) => file,
+        Err(error) => panic!("Problem creating the file: {:?}", error),
+    };
+    write!(output, "A text written to the file.").expect("Failed to write to file");
+    let input = File::open(path).unwrap();
+    let buffered = BufReader::new(input);
+    for line in buffered.lines() {
+        println!("{}", line.unwrap());
+    }
+
+    // let output2 = File::create("rand.txt");
+    let output2 = File::open("rand2.txt");
+    let output2 = match output2 {
+        Ok(file) => file,
+        Err(error) => match error.kind() {
+            ErrorKind::NotFound => match File::create("rand.txt") {
+                Ok(fc) => fc,
+                Err(e) => panic!("Tried to create file but there was a problem: {:?}", error),
+            },
+            _other_error => panic!("There was a problem opening the file: {:?}", error),
+        },
+    };
+}
+
+fn iterator_example (){
+    let mut arr_it = [1, 2, 3];
+    for val in arr_it.iter() {
+        println!("val: {}", val);
+    }
+    let mut arr_it = [1, 2, 3].iter();
+    for val in arr_it {
+        println!("val: {}", val);
+    }
+    let mut arr_it = [1, 2, 3];
+    let mut iter = arr_it.iter();
+    loop {
+        match iter.next() {
+            Some(x) => println!("{}", x),
+            None => break,
+        }
+    }
+    let mut iter = arr_it.iter();
+    println!("iter {:?}", iter.next()); // Some(1)
+    println!("iter {:?}", iter.next()); // Some(2)
+    println!("iter {:?}", iter.next()); // Some(3)
+    println!("iter {:?}", iter.next()); // None
+}
+
+fn closure_example (){
+    let add_nums = |x: i32, y: i32| -> i32 {x + y};
+    println!("add_nums: {}", add_nums(3, 2));
+
+    let can_vote = |age: i32| {
+        age >= 18
+    };
+    println!("Can vote: {} if 20", can_vote(20));
+    println!("Can vote: {} if 15", can_vote(15));
+
+    let mut samp1 = 6;
+    let print_var = || println!("sample1 = {}", samp1);
+    print_var();
+
+    // samp1 = 6;
+    println!("samp1 = {}", samp1);
+    let mut change_var = || samp1 += 1;
+    change_var();
+    println!("samp1 = {}", samp1);
+    samp1 = 6;
+    println!("samp1 = {}", samp1);
+
+    fn use_func<T>(a: i32, b: i32, func: T) -> i32
+    where T: Fn(i32, i32) -> i32 {
+        func(a, b)
+    }
+    let sum = |a, b| a + b;
+    let prod = |a, b| a * b;
+    println!("Sum: 2+3 = {}", use_func(2, 3, sum));
+    println!("Prod: 2*3 = {}", use_func(2, 3, prod));
+}
+
+fn smartpointer_example (){
+    let b_int1 = Box::new(5);
+    println!("b_int1 = {}", b_int1);
+
+    struct TreeNode<T> {
+        // pub left: TreeNode<T>,
+        // pub right: TreeNode<T>,
+        pub left: Option<Box<TreeNode<T>>>,
+        pub right: Option<Box<TreeNode<T>>>,
+        pub key: T,
+    }
+
+    impl<T> TreeNode<T> {
+        pub fn new(key: T) -> Self {
+            TreeNode { left: None, right: None, key,}
+        }
+        pub fn left(mut self, node: TreeNode<T>) -> Self {
+            self.left = Some(Box::new(node));
+            self
+        }
+        pub fn right(mut self, node: TreeNode<T>) -> Self {
+            self.right = Some(Box::new(node));
+            self
+        }
+    }
+
+    let node1 = TreeNode::new(1)
+    .left(TreeNode::new(2))
+    .right(TreeNode::new(3));
+    println!("node1 left: {}", node1.left.as_ref().unwrap().key);
+    println!("node1 right: {}", node1.right.as_ref().unwrap().key);
+    println!("node1: {}", node1.key);
+    println!("node1 left: {}", node1.left.as_ref().unwrap().key);
+    println!("node1 right: {}", node1.right.as_ref().unwrap().key);
+    println!("node1 left: {}", node1.left.unwrap().key);
+    println!("node1 right: {}", node1.right.unwrap().key);
+    // println!("node1 left: {}", node1.left.unwrap().left.unwrap().key);
+
+}
+
+use std::thread;
+use std::time::Duration;
+
+fn concurrency_example (){
+    let thread1 = thread::spawn(|| {
+        for i in 1..25 {
+            println!("Thread: {}", i);
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    for i in 1..20 {
+        println!("Main: {}", i);
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    thread1.join().unwrap();
+
+    pub struct Bank {
+        pub balance: f32,
+    }
+    fn withdraw(bank: &mut Bank, amount: f32) {
+        bank.balance -= amount;
+    }
+    let mut bank = Bank {balance: 100.0};
+    withdraw(&mut bank, 5.00);
+    println!("Bank balance: {}", bank.balance);
+
+    fn customer(bank: &mut Bank) {
+        withdraw(bank, 5.00);
+    }
+
+    customer(&mut bank);
+    println!("Bank balance: {}", bank.balance);
+    // thread::spawn(|| {
+    //     customer(&mut bank);
+    // }).join().unwrap();
+}
+
+
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
+fn smartpointer_rct_example (){
+    struct Bank {
+        balance: f32,
+    }
+    fn withdraw(the_bank: &Arc<Mutex<Bank>>, amount: f32) {
+        let mut bank_ref = the_bank.lock().unwrap();
+        if bank_ref.balance < 5.00 {
+            println!("Current balance: {} Not enough money", bank_ref.balance);
+        } else {
+            bank_ref.balance -= amount;
+            println!("Customer withdrew: {} Current Balance {}", amount, bank_ref.balance);
+        }
+    }
+
+    fn customer(the_bank: Arc<Mutex<Bank>>) {
+        withdraw(&the_bank, 5.00);
+    }
+    
+    let bank: Arc<Mutex<Bank>> = Arc::new(Mutex::new(Bank {balance: 22.0}));
+    let handles = (0..10).map(|_| {
+        let bank_ref = bank.clone();
+        thread::spawn(|| {
+            customer(bank_ref);
+        })
+    });
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    println!("Bank balance: {}", bank.lock().unwrap().balance);
+}
+
 fn main() {
     // greetngs();
     // constants();
@@ -439,10 +643,17 @@ fn main() {
     // enum_example();
     // vectors_example();
     // function_example();
-    // generic_example();
+    // generic_example(); // Difficult to understand
     // ownership();
     // hashmaps();
     // struct_example();
-    modules_examle();
+    // modules_examle();
+    // error_handling(); // Difficult to understand
+    // iterator_example();
+    // closure_example(); // Difficult to understand
+    // smartpointer_example();
+    // concurrency_example();
+    smartpointer_rct_example();
+
 }
 
