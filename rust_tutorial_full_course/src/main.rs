@@ -628,6 +628,57 @@ fn smartpointer_rct_example (){
     println!("Bank balance: {}", bank.lock().unwrap().balance);
 }
 
+fn mutex_example() {
+    let m = Mutex::new(5);
+
+    {
+        let mut num = m.lock().unwrap();
+        *num += 1;
+        println!("num = {:?}", num);
+    }
+
+    println!("m = {m:?}");
+    println!("m = {:?}", m);
+
+    *(m.lock().unwrap()) += 1;
+    println!("m.lock().unwrap() = {:?}", m.lock().unwrap());
+    
+    println!("m = {m:?}");
+    let mut num = m.lock().unwrap();
+    *num += 1;
+    println!("num = {:?}", num);
+
+    println!("m = {m:?}");
+    println!("Dropping m");
+    drop(num);
+
+    println!("m = {m:?}");
+    *m.lock().unwrap() += 1;
+    println!("m.lock().unwrap() = {:?}", m.lock().unwrap());
+
+}
+
+fn mutex_example2() {
+    let counter = Arc::new(Mutex::new(0));
+    let mut handles = vec![];
+
+    for _ in 0..11 {
+        let counter = Arc::clone(&counter);
+        let handle = thread::spawn(move || {
+            let mut num = counter.lock().unwrap();
+
+            *num += 1;
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    println!("Result: {}", *counter.lock().unwrap());
+}
+
 fn main() {
     // greetngs();
     // constants();
@@ -653,7 +704,9 @@ fn main() {
     // closure_example(); // Difficult to understand
     // smartpointer_example();
     // concurrency_example();
-    smartpointer_rct_example();
+    // smartpointer_rct_example();
+    // mutex_example();
+    mutex_example2();
 
 }
 
