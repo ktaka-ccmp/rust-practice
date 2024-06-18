@@ -10,7 +10,7 @@ use std::io::{Write, BufRead, BufReader,ErrorKind};
 use std::fs::File;
 use std::cmp::Ordering;
 
-fn greetngs() {
+fn greetings() {
     println!("What is your name?");
     let mut name = String::new();
     let greeting = "Nice to meet you";
@@ -421,7 +421,7 @@ fn struct_example(){
 mod restaurant;
 use crate::restaurant::order_food;
 
-fn modules_examle(){
+fn modules_example(){
     order_food();
 }
 
@@ -680,7 +680,7 @@ fn mutex_example2() {
 }
 
 fn main() {
-    // greetngs();
+    // greetings();
     // constants();
     // data_types();
     // random_number();
@@ -698,7 +698,7 @@ fn main() {
     // ownership();
     // hashmaps();
     // struct_example();
-    // modules_examle();
+    // modules_example();
     // error_handling(); // Difficult to understand
     // iterator_example();
     // closure_example(); // Difficult to understand
