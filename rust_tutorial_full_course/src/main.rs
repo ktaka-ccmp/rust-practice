@@ -2,6 +2,8 @@
 
 mod ex;
 mod restaurant;
+mod polymorph;
+mod lifetime;
 
 use ex::{
     arrays, casting, closure_example, concurrency_example, constants, data_types, enum_example,
@@ -18,7 +20,7 @@ fn main() {
     // random_number();
     // if_expression();
     // ternary_operator();
-    match_example();
+    // match_example();
     // arrays();
     // tuples();
     // string_example();
@@ -39,4 +41,6 @@ fn main() {
     // smartpointer_rct_example();
     // mutex_example();
     // ex::mutex_example2();
+    // polymorph::pm1();
+    lifetime::lt2();
 }
