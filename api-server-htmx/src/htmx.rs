@@ -1,13 +1,15 @@
 use aide::axum::{routing::get, ApiRouter};
 use aide::openapi::Response;
 use askama_axum::Template;
-use axum::extract::Query;
-use axum::extract::State;
-use axum::response::Html;
+// use askama_axum::Response;
+use axum::{
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{Html, IntoResponse},
+};
 use sqlx::SqlitePool;
 
-use crate::models::Customer;
-use crate::models::Params;
+use crate::models::{Customer, Params};
 
 #[derive(Template)]
 #[template(path = "content.list.j2")]
@@ -37,8 +39,11 @@ struct ContentListTbodyTemplate {
 async fn content_list_tbody(
     Query(params): Query<Params>,
     State(pool): State<SqlitePool>,
-) -> Html<String> {
-    // println!("{:?}", params);
+    headers: HeaderMap,
+) -> Result<Html<String>, StatusCode> {
+    if headers.get("HX-Request").is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     let skip = params.skip.unwrap_or(0);
     let limit = params.limit.unwrap_or(1);
@@ -48,16 +53,15 @@ async fn content_list_tbody(
         .bind(skip)
         .fetch_all(&pool)
         .await
-        .map_err(|_| Response::default())
-        .unwrap();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let template = ContentListTbodyTemplate {
         skip_next: skip + limit,
         limit,
-        customers: customers,
+        customers,
     };
 
-    Html(template.render().unwrap())
+    Ok(Html(template.render().unwrap()))
 }
 
 pub fn create_router(pool: SqlitePool) -> ApiRouter {
