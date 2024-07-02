@@ -1,0 +1,11 @@
+[package]
+name = "aide01"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aide = { version = "0.13.4", features = ["axum", "axum-extra", "scalar", "serde_qs"] }
+axum = "0.7.5"
+schemars = "0.8.21"
+serde = { version = "1.0.203", features = ["derive"] }
+tokio = { version = "1.38.0", features = ["full"] }
