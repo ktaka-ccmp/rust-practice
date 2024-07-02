@@ -1,5 +1,5 @@
 [package]
-name = "api-server-swagger"
+name = "api-server-utoipa"
 version = "0.1.0"
 edition = "2021"
 
