@@ -1,11 +1,9 @@
 use aide::axum::{routing::get, ApiRouter};
-use aide::openapi::Response;
 use askama_axum::Template;
-// use askama_axum::Response;
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse},
+    response::Html,
 };
 use sqlx::SqlitePool;
 
@@ -19,13 +17,17 @@ struct ContentListTemplate {
     limit: i32,
 }
 
-async fn content_list() -> Html<String> {
+async fn content_list(headers: HeaderMap) -> Result<Html<String>, StatusCode> {
+    if headers.get("HX-Request").is_none() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    
     let template = ContentListTemplate {
         title: "Incremental hx-get demo".to_string(),
         skip_next: 0,
         limit: 2,
     };
-    Html(template.render().unwrap())
+    Ok(Html(template.render().unwrap()))
 }
 
 #[derive(Template)]
