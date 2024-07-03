@@ -1,8 +1,9 @@
 use aide::axum::{routing::get, ApiRouter};
 use axum::{
     extract::{Path, State},
-    response::{ IntoResponse, Response},
+    response::{IntoResponse, Response},
     Json,
+    http::StatusCode,
 };
 use sqlx::SqlitePool;
 
@@ -36,8 +37,12 @@ pub async fn customer(
                 error: format!("{:?}", e),
             })
             .into_response()
-        })?;
-    Ok(Json(customer))
+        });
+
+    match customer {
+        Ok(customer) => Ok(Json(customer)),
+        Err(_) => Err((StatusCode::NOT_FOUND, "Customer not found").into_response()),
+    }
 }
 
 pub fn create_router(pool: SqlitePool) -> ApiRouter {
