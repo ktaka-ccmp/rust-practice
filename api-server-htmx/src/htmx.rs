@@ -3,12 +3,15 @@ use askama_axum::Template;
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::Html,
+    response::{Html, IntoResponse, Response},
 };
+use serde::Serialize;
 use sqlx::SqlitePool;
+use tracing::error;
 
 use crate::models::{Customer, Params};
 
+/// Represents a template for rendering the content list.
 #[derive(Template)]
 #[template(path = "content.list.j2")]
 struct ContentListTemplate {
@@ -17,19 +20,7 @@ struct ContentListTemplate {
     limit: i32,
 }
 
-async fn content_list(headers: HeaderMap) -> Result<Html<String>, StatusCode> {
-    if headers.get("HX-Request").is_none() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    
-    let template = ContentListTemplate {
-        title: "Incremental hx-get demo".to_string(),
-        skip_next: 0,
-        limit: 2,
-    };
-    Ok(Html(template.render().unwrap()))
-}
-
+/// Represents a template for rendering the content list table body.
 #[derive(Template)]
 #[template(path = "content.list.tbody.j2")]
 struct ContentListTbodyTemplate {
@@ -38,24 +29,63 @@ struct ContentListTbodyTemplate {
     customers: Vec<Customer>,
 }
 
+/// Represents an error response.
+#[derive(Serialize)]
+struct ErrorResponse {
+    detail: String,
+}
+
+impl IntoResponse for ErrorResponse {
+    fn into_response(self) -> Response {
+        (StatusCode::BAD_REQUEST, axum::Json(self)).into_response()
+    }
+}
+
+/// Checks if the request is an HX request.
+/// Returns an error response if the request is not an HX request.
+fn check_hx_request(headers: &HeaderMap) -> Result<(), Response> {
+    if headers.get("HX-Request").is_none() {
+        Err(ErrorResponse {
+            detail: "Only HX request is allowed to this endpoint.".to_string(),
+        }
+        .into_response())
+    } else {
+        Ok(())
+    }
+}
+
+/// Handles the content list request.
+async fn content_list(headers: HeaderMap) -> Result<Html<String>, Response> {
+    check_hx_request(&headers)?;
+
+    let template = ContentListTemplate {
+        title: "Incremental hx-get demo".to_string(),
+        skip_next: 0,
+        limit: 2,
+    };
+    Ok(Html(template.render().unwrap()))
+}
+
+/// Handles the content list table body request.
 async fn content_list_tbody(
     Query(params): Query<Params>,
     State(pool): State<SqlitePool>,
     headers: HeaderMap,
-) -> Result<Html<String>, StatusCode> {
-    if headers.get("HX-Request").is_none() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
+) -> Result<Html<String>, Response> {
+    check_hx_request(&headers)?;
 
     let skip = params.skip.unwrap_or(0);
     let limit = params.limit.unwrap_or(1);
 
-    let customers = sqlx::query_as::<_, Customer>("SELECT * FROM customer LIMIT $1 OFFSET $2")
+    let customers = sqlx::query_as::<_, Customer>("SELECT * FROM customer LIMIT ? OFFSET ?")
         .bind(limit)
         .bind(skip)
         .fetch_all(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            error!("Database error: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
+        })?;
 
     let template = ContentListTbodyTemplate {
         skip_next: skip + limit,
@@ -66,6 +96,7 @@ async fn content_list_tbody(
     Ok(Html(template.render().unwrap()))
 }
 
+/// Creates the API router with the given SQLite pool.
 pub fn create_router(pool: SqlitePool) -> ApiRouter {
     ApiRouter::new()
         .api_route("/content.list", get(content_list))
