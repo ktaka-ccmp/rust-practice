@@ -50,7 +50,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(index))
-        .route("/auth/discord", get(discord_auth))
+        .route("/auth/google", get(google_auth))
         .route("/auth/authorized", get(login_authorized))
         .route("/protected", get(protected))
         .route("/logout", get(logout))
@@ -91,24 +91,17 @@ impl FromRef<AppState> for BasicClient {
 }
 
 fn oauth_client() -> Result<BasicClient, AppError> {
-    // Environment variables (* = required):
-    // *"CLIENT_ID"     "REPLACE_ME";
-    // *"CLIENT_SECRET" "REPLACE_ME";
-    //  "REDIRECT_URL"  "http://127.0.0.1:3000/auth/authorized";
-    //  "AUTH_URL"      "https://discord.com/api/oauth2/authorize?response_type=code";
-    //  "TOKEN_URL"     "https://discord.com/api/oauth2/token";
-
     let client_id = env::var("CLIENT_ID").context("Missing CLIENT_ID!")?;
     let client_secret = env::var("CLIENT_SECRET").context("Missing CLIENT_SECRET!")?;
-    let redirect_url = env::var("REDIRECT_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000/auth/authorized".to_string());
+    let origin = env::var("ORIGIN").context("Missing ORIGIN!")?;
+    let redirect_url = format!("{}/auth/authorized", origin);
 
     let auth_url = env::var("AUTH_URL").unwrap_or_else(|_| {
-        "https://discord.com/api/oauth2/authorize?response_type=code".to_string()
+        "https://accounts.google.com/o/oauth2/v2/auth".to_string()
     });
 
     let token_url = env::var("TOKEN_URL")
-        .unwrap_or_else(|_| "https://discord.com/api/oauth2/token".to_string());
+        .unwrap_or_else(|_| "https://oauth2.googleapis.com/token".to_string());
 
     Ok(BasicClient::new(
         ClientId::new(client_id),
@@ -125,10 +118,14 @@ fn oauth_client() -> Result<BasicClient, AppError> {
 // https://discord.com/developers/docs/resources/user#user-object-user-structure
 #[derive(Debug, Serialize, Deserialize)]
 struct User {
+    family_name: String,
+    name: String,
+    picture: String,
+    email: String,
+    given_name: String,
     id: String,
-    avatar: Option<String>,
-    username: String,
-    discriminator: String,
+    hd: String,
+    verified_email: bool,
 }
 
 // Session is optional
@@ -136,22 +133,24 @@ async fn index(user: Option<User>) -> impl IntoResponse {
     match user {
         Some(u) => format!(
             "Hey {}! You're logged in!\nYou may now access `/protected`.\nLog out with `/logout`.",
-            u.username
+            u.name
         ),
-        None => "You're not logged in.\nVisit `/auth/discord` to do so.".to_string(),
+        None => "You're not logged in.\nVisit `/auth/google` to do so.".to_string(),
     }
 }
 
-async fn discord_auth(State(client): State<BasicClient>) -> impl IntoResponse {
-    // TODO: this example currently doesn't validate the CSRF token during login attempts. That
-    // makes it vulnerable to cross-site request forgery. If you copy code from this example make
-    // sure to add a check for the CSRF token.
-    //
-    // Issue for adding check to this example https://github.com/tokio-rs/axum/issues/2511
-    let (auth_url, _csrf_token) = client
+async fn google_auth(State(client): State<BasicClient>) -> impl IntoResponse {
+    let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new("identify".to_string()))
+        .add_scope(Scope::new("openid".to_string()))
+        .add_scope(Scope::new("email".to_string()))
+        .add_scope(Scope::new("profile".to_string()))
+        .add_extra_param("prompt", "consent")
+        .add_extra_param("access_type", "online")
         .url();
+
+    println!("Auth URL query: {:#?}", auth_url.query());
+    println!("CSRF Token: {:#?}", csrf_token.secret());
 
     // Redirect to Discord's oauth service
     Redirect::to(auth_url.as_ref())
@@ -201,6 +200,7 @@ async fn login_authorized(
     State(oauth_client): State<BasicClient>,
 ) -> Result<impl IntoResponse, AppError> {
     println!("Query: {:#?}", query);
+    println!("code: {:#?}", query.code);
     // Get an auth token
     let token = oauth_client
         .exchange_code(AuthorizationCode::new(query.code.clone()))
@@ -208,11 +208,13 @@ async fn login_authorized(
         .await
         .context("failed in sending request request to authorization server")?;
 
-    // Fetch user data from discord
+    println!("Token: {:#?}", token);
+    println!("access_token: {:#?}", token.access_token().secret());
+
+        // Fetch user data from discord
     let client = reqwest::Client::new();
     let user_data: User = client
-        // https://discord.com/developers/docs/resources/user#get-current-user
-        .get("https://discordapp.com/api/users/@me")
+        .get("https://www.googleapis.com/userinfo/v2/me")
         .bearer_auth(token.access_token().secret())
         .send()
         .await
@@ -227,7 +229,6 @@ async fn login_authorized(
         .insert("user", &user_data)
         .context("failed in inserting serialized value into session")?;
 
-    println!("Token: {:#?}", token);
     println!("User data: {:#?}", user_data);
     println!("Session: {:#?}", session);
 
@@ -257,7 +258,7 @@ struct AuthRedirect;
 
 impl IntoResponse for AuthRedirect {
     fn into_response(self) -> Response {
-        Redirect::temporary("/auth/discord").into_response()
+        Redirect::temporary("/auth/google").into_response()
     }
 }
 

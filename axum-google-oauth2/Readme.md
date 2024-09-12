@@ -1,5 +1,7 @@
 # axum google oauth2 example
 
+もともとdiscord用の[axum/examples/oauth](https://github.com/tokio-rs/axum/blob/main/examples/oauth/src/main.rs)を改造
+
 ```text
 ngrok http 3000
 ```
