@@ -1,13 +1,3 @@
-//! Example OAuth (Discord) implementation.
-//!
-//! 1) Create a new application at <https://discord.com/developers/applications>
-//! 2) Visit the OAuth2 tab to get your CLIENT_ID and CLIENT_SECRET
-//! 3) Add a new redirect URI (for this example: `http://127.0.0.1:3000/auth/authorized`)
-//! 4) Run with the following (replacing values appropriately):
-//! ```not_rust
-//! CLIENT_ID=REPLACE_ME CLIENT_SECRET=REPLACE_ME cargo run -p example-oauth
-//! ```
-
 use anyhow::{Context, Result};
 use async_session::{MemoryStore, Session, SessionStore};
 use axum::{
@@ -140,8 +130,10 @@ async fn index(user: Option<User>) -> impl IntoResponse {
     }
 }
 
+use urlencoding::encode;
+
 async fn google_auth(State(client): State<BasicClient>) -> impl IntoResponse {
-    let (auth_url, csrf_token) = client
+    let (_auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         // .set_response_type(&ResponseType::new("code id_token".to_string()))
         .set_response_type(&ResponseType::new("code".to_string()))
@@ -154,11 +146,35 @@ async fn google_auth(State(client): State<BasicClient>) -> impl IntoResponse {
         .add_extra_param("response_mode", "query")
         .url();
 
-    println!("Auth URL query: {:#?}", auth_url.query());
+    println!("Auth URL query: {:#?}", _auth_url.query());
     println!("CSRF Token: {:#?}", csrf_token.secret());
 
+    let __auth_url = reqwest::Client::new()
+        .get(client.auth_url().to_string())
+        .query(&[
+            ("client_id", client.client_id().to_string()),
+            ("redirect_uri", client.redirect_url().unwrap().as_str().to_string()),
+            ("scope", "openid email profile".to_string()),
+            ("prompt", "consent".to_string()),
+            ("access_type", "online".to_string()),
+            ("nonce", "some_nonce".to_string()),
+            ("response_mode", "query".to_string()),
+        ])
+        .build();
+
+    let auth_url = format!(
+        "{}?response_type={}&client_id={}&redirect_uri={}&scope={}&prompt=consent&access_type=online&nonce=some_nonce&response_mode=query",
+        client.auth_url().to_string(),
+        "code",
+        client.client_id().to_string(),
+        encode(client.redirect_url().unwrap().as_str()),
+        "openid+email+profile",
+    );
+
+    println!("Auth URL: {:#?}", auth_url);
+
     // Redirect to Discord's oauth service
-    Redirect::to(auth_url.as_ref())
+    Redirect::to(auth_url.as_str())
 }
 
 // Valid user session required. If there is none, redirect to the auth page
