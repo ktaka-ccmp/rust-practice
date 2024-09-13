@@ -305,6 +305,7 @@ async fn login_authorized(
     println!("code: {:#?}", query.code);
     println!("Params: {:#?}", params);
 
+    // Exchange code for access_token and id_token
     let response = reqwest::Client::new()
         .post(params.token_url)
         .form(&[
@@ -326,6 +327,7 @@ async fn login_authorized(
     // println!("Access Token: {:#?}", access_token);
     // println!("ID Token: {:#?}", id_token);
 
+    // Get user data from Google API using access_token
     let response = reqwest::Client::new()
         .get("https://www.googleapis.com/userinfo/v2/me")
         .bearer_auth(access_token)
@@ -338,6 +340,7 @@ async fn login_authorized(
     // println!("Response Body: {:#?}", response_body);
     println!("User data: {:#?}", user_data);
 
+    // Insert user data into session
     let mut session = Session::new();
     session
         .insert("user", &user_data)
@@ -399,12 +402,14 @@ where
             })?;
         let session_cookie = cookies.get(COOKIE_NAME).ok_or(AuthRedirect)?;
 
+        // Retrieve session from store
         let session = store
             .load_session(session_cookie.to_string())
             .await
             .unwrap()
             .ok_or(AuthRedirect)?;
 
+        // Retrieve user data from session
         let user = session.get::<User>("user").ok_or(AuthRedirect)?;
 
         Ok(user)
