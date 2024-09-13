@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-
 static COOKIE_NAME: &str = "SESSION";
 
 #[tokio::main]
@@ -28,29 +27,7 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // `MemoryStore` is just used as an example. Don't use this in production.
-    let store = MemoryStore::new();
-
-    let oauth2_params = OAuth2Params {
-        client_id: env::var("CLIENT_ID").expect("Missing CLIENT_ID!"),
-        client_secret: env::var("CLIENT_SECRET").expect("Missing CLIENT_SECRET!"),
-        redirect_uri: format!("{}/auth/authorized", env::var("ORIGIN").expect("Missing ORIGIN!")),
-        auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
-        token_url: "https://oauth2.googleapis.com/token".to_string(),
-        response_type: ResponseType::Code.as_str().to_string(),
-        scope: "openid+email+profile".to_string(),
-        nonce: None,
-        state: None,
-        csrf_token: None,
-        response_mode: Some(ResponseMode::Query),   // "query",
-        prompt: Some(Prompt::Consent),              // "consent",
-        access_type: Some(AccessType::Online),      // "online",
-    };
-
-    let app_state = AppState {
-        store,
-        oauth2_params,
-    };
+    let app_state = app_state_init();
 
     let app = Router::new()
         .route("/", get(index))
@@ -74,6 +51,35 @@ async fn main() {
     );
 
     axum::serve(listener, app).await.unwrap();
+}
+
+fn app_state_init() -> AppState {
+    // `MemoryStore` is just used as an example. Don't use this in production.
+    let store = MemoryStore::new();
+
+    let oauth2_params = OAuth2Params {
+        client_id: env::var("CLIENT_ID").expect("Missing CLIENT_ID!"),
+        client_secret: env::var("CLIENT_SECRET").expect("Missing CLIENT_SECRET!"),
+        redirect_uri: format!(
+            "{}/auth/authorized",
+            env::var("ORIGIN").expect("Missing ORIGIN!")
+        ),
+        auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+        token_url: "https://oauth2.googleapis.com/token".to_string(),
+        response_type: ResponseType::Code.as_str().to_string(),
+        scope: "openid+email+profile".to_string(),
+        nonce: None,
+        state: None,
+        csrf_token: None,
+        response_mode: Some(ResponseMode::Query), // "query",
+        prompt: Some(Prompt::Consent),            // "consent",
+        access_type: Some(AccessType::Online),    // "online",
+    };
+
+    AppState {
+        store,
+        oauth2_params,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -223,7 +229,6 @@ async fn index(user: Option<User>) -> impl IntoResponse {
 use urlencoding::encode;
 
 async fn google_auth(State(mut params): State<OAuth2Params>) -> impl IntoResponse {
-
     params.nonce = Some("some_nonce".to_string());
     params.csrf_token = Some("some_csrf_token".to_string());
     params.state = Some("some_state".to_string());
@@ -305,11 +310,69 @@ async fn login_authorized(
     println!("code: {:#?}", query.code);
     println!("Params: {:#?}", params);
 
-    // Exchange code for access_token and id_token
+    let (access_token, id_token) = exchange_code_for_token(params, query.code).await?;
+    println!("Access Token: {:#?}", access_token);
+    println!("ID Token: {:#?}", id_token);
+
+    let user_data = fetch_user_data_from_google(access_token).await?;
+
+    let session_id = create_and_store_session(user_data, store).await?;
+
+    let headers = set_coockie(session_id)?;
+
+    Ok((headers, Redirect::to("/")))
+}
+
+fn set_coockie(session_id: String) -> Result<HeaderMap, AppError> {
+    let cookie = format!("{COOKIE_NAME}={session_id}; SameSite=Lax; Path=/");
+    println!("Cookie: {:#?}", cookie);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        SET_COOKIE,
+        cookie.parse().context("failed to parse cookie")?,
+    );
+    Ok(headers)
+}
+
+async fn create_and_store_session(user_data: User, store: MemoryStore) -> Result<String, AppError> {
+    let mut session = Session::new();
+    session
+        .insert("user", &user_data)
+        .context("failed in inserting serialized value into session")?;
+    println!("Session: {:#?}", session);
+    let session_id = store
+        .store_session(session)
+        .await
+        .context("failed to store session")?
+        .context("unexpected error retrieving cookie value")?;
+    Ok(session_id)
+}
+
+async fn fetch_user_data_from_google(access_token: String) -> Result<User, AppError> {
+    let response = reqwest::Client::new()
+        .get("https://www.googleapis.com/userinfo/v2/me")
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .context("failed in sending request to target Url")?;
+    let response_body = response
+        .text()
+        .await
+        .context("failed to get response body")?;
+    let user_data: User =
+        serde_json::from_str(&response_body).context("failed to deserialize response body")?;
+    println!("User data: {:#?}", user_data);
+    Ok(user_data)
+}
+
+async fn exchange_code_for_token(
+    params: OAuth2Params,
+    code: String,
+) -> Result<(String, String), AppError> {
     let response = reqwest::Client::new()
         .post(params.token_url)
         .form(&[
-            ("code", query.code.clone()),
+            ("code", code),
             ("client_id", params.client_id.clone()),
             ("client_secret", params.client_secret.clone()),
             ("redirect_uri", params.redirect_uri.clone()),
@@ -318,56 +381,16 @@ async fn login_authorized(
         .send()
         .await
         .context("failed in sending request request to authorization server")?;
-
-    let response_body = response.text().await.context("failed to get response body")?;
-    let response_json: OidcTokenResponse = serde_json::from_str(&response_body).context("failed to deserialize response body")?;
+    let response_body = response
+        .text()
+        .await
+        .context("failed to get response body")?;
+    let response_json: OidcTokenResponse =
+        serde_json::from_str(&response_body).context("failed to deserialize response body")?;
     let access_token = response_json.access_token.clone();
-    let _id_token = response_json.id_token.clone().unwrap();
+    let id_token = response_json.id_token.clone().unwrap();
     println!("Response JSON: {:#?}", response_json);
-    // println!("Access Token: {:#?}", access_token);
-    // println!("ID Token: {:#?}", id_token);
-
-    // Get user data from Google API using access_token
-    let response = reqwest::Client::new()
-        .get("https://www.googleapis.com/userinfo/v2/me")
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .context("failed in sending request to target Url")?;
-
-    let response_body = response.text().await.context("failed to get response body")?;
-    let user_data: User = serde_json::from_str(&response_body).context("failed to deserialize response body")?;
-    // println!("Response Body: {:#?}", response_body);
-    println!("User data: {:#?}", user_data);
-
-    // Insert user data into session
-    let mut session = Session::new();
-    session
-        .insert("user", &user_data)
-        .context("failed in inserting serialized value into session")?;
-
-    println!("Session: {:#?}", session);
-
-    // Store session and get corresponding cookie
-    let cookie = store
-        .store_session(session)
-        .await
-        .context("failed to store session")?
-        .context("unexpected error retrieving cookie value")?;
-
-    // Build the cookie
-    let cookie = format!("{COOKIE_NAME}={cookie}; SameSite=Lax; Path=/");
-
-    println!("Cookie: {:#?}", cookie);
-
-    // Set cookie
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        SET_COOKIE,
-        cookie.parse().context("failed to parse cookie")?,
-    );
-
-    Ok((headers, Redirect::to("/")))
+    Ok((access_token, id_token))
 }
 
 struct AuthRedirect;
