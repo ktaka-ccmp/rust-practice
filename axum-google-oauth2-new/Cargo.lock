@@ -202,6 +202,7 @@ dependencies = [
  "oauth2",
  "reqwest 0.12.7",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

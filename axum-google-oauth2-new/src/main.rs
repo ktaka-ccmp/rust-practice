@@ -10,15 +10,11 @@ use axum::{
 };
 use axum_extra::{headers, typed_header::TypedHeaderRejectionReason, TypedHeader};
 use http::{header, request::Parts, StatusCode};
-use oauth2::{
-    basic::BasicClient, reqwest::async_http_client, AuthUrl, AuthorizationCode, ClientId,
-    ClientSecret, CsrfToken, RedirectUrl, ResponseType, Scope, TokenResponse, TokenUrl,
-};
+
 use serde::{Deserialize, Serialize};
 use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use reqwest::Client;
 
 static COOKIE_NAME: &str = "SESSION";
 
@@ -34,10 +30,26 @@ async fn main() {
 
     // `MemoryStore` is just used as an example. Don't use this in production.
     let store = MemoryStore::new();
-    let oauth_client = oauth_client().unwrap();
+
+    let oauth2_params = OAuth2Params {
+        client_id: env::var("CLIENT_ID").expect("Missing CLIENT_ID!"),
+        client_secret: env::var("CLIENT_SECRET").expect("Missing CLIENT_SECRET!"),
+        redirect_uri: format!("{}/auth/authorized", env::var("ORIGIN").expect("Missing ORIGIN!")),
+        auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+        token_url: "https://oauth2.googleapis.com/token".to_string(),
+        response_type: ResponseType::Code.as_str().to_string(),
+        scope: "openid+email+profile".to_string(),
+        nonce: None,
+        state: None,
+        csrf_token: None,
+        response_mode: Some(ResponseMode::Query),   // "query",
+        prompt: Some(Prompt::Consent),              // "consent",
+        access_type: Some(AccessType::Online),      // "online",
+    };
+
     let app_state = AppState {
         store,
-        oauth_client,
+        oauth2_params,
     };
 
     let app = Router::new()
@@ -64,10 +76,112 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+#[derive(Debug, Clone)]
+enum ResponseMode {
+    Query,
+    Fragment,
+    FormPost,
+}
+
+impl ResponseMode {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Query => "query",
+            Self::Fragment => "fragment",
+            Self::FormPost => "form_post",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Prompt {
+    None,
+    Consent,
+    SelectAccount,
+    Login,
+    ConsentSelectAccount,
+    ConsentLogin,
+    SelectAccountLogin,
+    ConsentSelectAccountLogin,
+}
+
+impl Prompt {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::None => "none",
+            Self::Consent => "consent",
+            Self::SelectAccount => "select_account",
+            Self::Login => "login",
+            Self::ConsentSelectAccount => "consent select_account",
+            Self::ConsentLogin => "consent login",
+            Self::SelectAccountLogin => "select_account login",
+            Self::ConsentSelectAccountLogin => "consent select_account login",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum AccessType {
+    Online,
+    Offline,
+}
+
+impl AccessType {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Online => "online",
+            Self::Offline => "offline",
+        }
+    }
+}
+
+enum ResponseType {
+    None = 0b000,
+    Code = 0b001,
+    Token = 0b010,
+    IdToken = 0b100,
+    CodeToken = 0b011,
+    CodeIdToken = 0b101,
+    TokenIdToken = 0b110,
+    CodeTokenIdToken = 0b111,
+}
+
+impl ResponseType {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::None => "",
+            Self::Code => "code",
+            Self::Token => "token",
+            Self::IdToken => "id_token",
+            Self::CodeToken => "code token",
+            Self::CodeIdToken => "code id_token",
+            Self::TokenIdToken => "token id_token",
+            Self::CodeTokenIdToken => "code token id_token",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct OAuth2Params {
+    client_id: String,
+    client_secret: String,
+    redirect_uri: String,
+    auth_url: String,
+    token_url: String,
+    response_type: String,
+    scope: String,
+    nonce: Option<String>,
+    state: Option<String>,
+    csrf_token: Option<String>,
+    response_mode: Option<ResponseMode>,
+    prompt: Option<Prompt>,
+    access_type: Option<AccessType>,
+}
+
 #[derive(Clone)]
 struct AppState {
     store: MemoryStore,
-    oauth_client: BasicClient,
+    oauth2_params: OAuth2Params,
 }
 
 impl FromRef<AppState> for MemoryStore {
@@ -76,37 +190,13 @@ impl FromRef<AppState> for MemoryStore {
     }
 }
 
-impl FromRef<AppState> for BasicClient {
+impl FromRef<AppState> for OAuth2Params {
     fn from_ref(state: &AppState) -> Self {
-        state.oauth_client.clone()
+        state.oauth2_params.clone()
     }
 }
 
-fn oauth_client() -> Result<BasicClient, AppError> {
-    let client_id = env::var("CLIENT_ID").context("Missing CLIENT_ID!")?;
-    let client_secret = env::var("CLIENT_SECRET").context("Missing CLIENT_SECRET!")?;
-    let origin = env::var("ORIGIN").context("Missing ORIGIN!")?;
-    let redirect_url = format!("{}/auth/authorized", origin);
-
-    let auth_url = env::var("AUTH_URL")
-        .unwrap_or_else(|_| "https://accounts.google.com/o/oauth2/v2/auth".to_string());
-
-    let token_url =
-        env::var("TOKEN_URL").unwrap_or_else(|_| "https://oauth2.googleapis.com/token".to_string());
-
-    Ok(BasicClient::new(
-        ClientId::new(client_id),
-        Some(ClientSecret::new(client_secret)),
-        AuthUrl::new(auth_url).context("failed to create new authorization server URL")?,
-        Some(TokenUrl::new(token_url).context("failed to create new token endpoint URL")?),
-    )
-    .set_redirect_uri(
-        RedirectUrl::new(redirect_url).context("failed to create new redirection URL")?,
-    ))
-}
-
-// The user data we'll get back from Discord.
-// https://discord.com/developers/docs/resources/user#user-object-user-structure
+// The user data we'll get back from Google
 #[derive(Debug, Serialize, Deserialize)]
 struct User {
     family_name: String,
@@ -132,48 +222,28 @@ async fn index(user: Option<User>) -> impl IntoResponse {
 
 use urlencoding::encode;
 
-async fn google_auth(State(client): State<BasicClient>) -> impl IntoResponse {
-    let (_auth_url, csrf_token) = client
-        .authorize_url(CsrfToken::new_random)
-        // .set_response_type(&ResponseType::new("code id_token".to_string()))
-        .set_response_type(&ResponseType::new("code".to_string()))
-        .add_scope(Scope::new("openid".to_string()))
-        .add_scope(Scope::new("email".to_string()))
-        .add_scope(Scope::new("profile".to_string()))
-        .add_extra_param("prompt", "consent")
-        .add_extra_param("access_type", "online")
-        .add_extra_param("nonce", "some_nonce")
-        .add_extra_param("response_mode", "query")
-        .url();
+async fn google_auth(State(mut params): State<OAuth2Params>) -> impl IntoResponse {
 
-    println!("Auth URL query: {:#?}", _auth_url.query());
-    println!("CSRF Token: {:#?}", csrf_token.secret());
-
-    let __auth_url = reqwest::Client::new()
-        .get(client.auth_url().to_string())
-        .query(&[
-            ("client_id", client.client_id().to_string()),
-            ("redirect_uri", client.redirect_url().unwrap().as_str().to_string()),
-            ("scope", "openid email profile".to_string()),
-            ("prompt", "consent".to_string()),
-            ("access_type", "online".to_string()),
-            ("nonce", "some_nonce".to_string()),
-            ("response_mode", "query".to_string()),
-        ])
-        .build();
+    params.nonce = Some("some_nonce".to_string());
+    params.csrf_token = Some("some_csrf_token".to_string());
+    params.state = Some("some_state".to_string());
 
     let auth_url = format!(
-        "{}?response_type={}&client_id={}&redirect_uri={}&scope={}&prompt=consent&access_type=online&nonce=some_nonce&response_mode=query",
-        client.auth_url().to_string(),
-        "code",
-        client.client_id().to_string(),
-        encode(client.redirect_url().unwrap().as_str()),
-        "openid+email+profile",
+        "{}?client_id={}&redirect_uri={}&response_type={}&scope={}&state={}&nonce={}&prompt={}&access_type={}&response_mode={}",
+        params.auth_url,
+        params.client_id,
+        encode(params.redirect_uri.as_str()),
+        encode(params.response_type.as_str()),
+        params.scope,
+        params.state.as_ref().unwrap(),
+        params.nonce.as_ref().unwrap(),
+        params.prompt.as_ref().unwrap().as_str(),
+        params.access_type.as_ref().unwrap().as_str(),
+        params.response_mode.as_ref().unwrap().as_str(),
     );
+    // Need to investigate how to use nonce, state, csrf_token.
 
     println!("Auth URL: {:#?}", auth_url);
-
-    // Redirect to Discord's oauth service
     Redirect::to(auth_url.as_str())
 }
 
@@ -226,82 +296,53 @@ struct OidcTokenResponse {
     id_token: Option<String>,
 }
 
-
 async fn login_authorized(
     Query(query): Query<AuthRequest>,
-    // State(store): State<MemoryStore>,
-    State(oauth_client): State<BasicClient>,
+    State(store): State<MemoryStore>,
+    State(params): State<OAuth2Params>,
 ) -> Result<impl IntoResponse, AppError> {
     println!("Query: {:#?}", query);
     println!("code: {:#?}", query.code);
-    println!("oauth_client: {:#?}", oauth_client);
-
-    println!("Client ID: {:#?}", oauth_client.client_id());
-    println!("Redirect URI: {:#?}", oauth_client.redirect_url());
-    println!("Token URL: {:#?}", oauth_client.token_url());
-
-    let client_secret = env::var("CLIENT_SECRET").context("Missing CLIENT_SECRET!")?;
-
-    println!("Client Secret: {:#?}", client_secret);
-
-    // println!("Grant Type: {:#?}", oauth_client.grant_type());
+    println!("Params: {:#?}", params);
 
     let response = reqwest::Client::new()
-        .post(oauth_client.token_url().unwrap().as_str())
+        .post(params.token_url)
         .form(&[
             ("code", query.code.clone()),
-            ("client_id", oauth_client.client_id().to_string()),
-            ("client_secret", client_secret),
-            ("redirect_uri", oauth_client.redirect_url().unwrap().as_str().to_string()),
+            ("client_id", params.client_id.clone()),
+            ("client_secret", params.client_secret.clone()),
+            ("redirect_uri", params.redirect_uri.clone()),
             ("grant_type", "authorization_code".to_string()),
         ])
         .send()
         .await
         .context("failed in sending request request to authorization server")?;
 
-    println!("Response: {:#?}", response);
-    // println!("Response body: {:#?}", response.text().await);
-    println!("Response json: {:#?}", response.json::<OidcTokenResponse>().await);
+    let response_body = response.text().await.context("failed to get response body")?;
+    let response_json: OidcTokenResponse = serde_json::from_str(&response_body).context("failed to deserialize response body")?;
+    let access_token = response_json.access_token.clone();
+    let _id_token = response_json.id_token.clone().unwrap();
+    println!("Response JSON: {:#?}", response_json);
+    // println!("Access Token: {:#?}", access_token);
+    // println!("ID Token: {:#?}", id_token);
 
-    Ok(Redirect::to("/"))
-}
-
-async fn _login_authorized(
-    Query(query): Query<AuthRequest>,
-    State(store): State<MemoryStore>,
-    State(oauth_client): State<BasicClient>,
-) -> Result<impl IntoResponse, AppError> {
-    println!("Query: {:#?}", query);
-    println!("code: {:#?}", query.code);
-    // Get an auth token
-    let token = oauth_client
-        .exchange_code(AuthorizationCode::new(query.code.clone()))
-        .request_async(async_http_client)
-        .await
-        .context("failed in sending request request to authorization server")?;
-
-    println!("Token: {:#?}", token);
-    println!("access_token: {:#?}", token.access_token().secret());
-
-    // Fetch user data from discord
-    let client = reqwest::Client::new();
-    let user_data: User = client
+    let response = reqwest::Client::new()
         .get("https://www.googleapis.com/userinfo/v2/me")
-        .bearer_auth(token.access_token().secret())
+        .bearer_auth(access_token)
         .send()
         .await
-        .context("failed in sending request to target Url")?
-        .json::<User>()
-        .await
-        .context("failed to deserialize response as JSON")?;
+        .context("failed in sending request to target Url")?;
 
-    // Create a new session filled with user data
+    let response_body = response.text().await.context("failed to get response body")?;
+    let user_data: User = serde_json::from_str(&response_body).context("failed to deserialize response body")?;
+    // println!("Response Body: {:#?}", response_body);
+    println!("User data: {:#?}", user_data);
+
     let mut session = Session::new();
     session
         .insert("user", &user_data)
         .context("failed in inserting serialized value into session")?;
 
-    println!("User data: {:#?}", user_data);
     println!("Session: {:#?}", session);
 
     // Store session and get corresponding cookie
