@@ -15,6 +15,15 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+// use tower_http::cors::CorsLayer;
+// use http::HeaderValue;
+
+use url::Url;
+
+use chrono::{DateTime, Duration, Utc};
+use rand::{thread_rng, Rng};
+use urlencoding::encode;
+
 static COOKIE_NAME: &str = "SessionId";
 static CSRF_COOKIE_NAME: &str = "CsrfId";
 
@@ -30,12 +39,23 @@ async fn main() {
 
     let app_state = app_state_init();
 
+    // CorsLayer is not needed unless frontend is coded in JavaScript and is hosted on a different domain.
+
+    // let allowed_origin = env::var("ORIGIN").expect("Missing ORIGIN!");
+    // let allowed_origin = format!("http://localhost:3000");
+
+    // let cors = CorsLayer::new()
+    //     .allow_origin(HeaderValue::from_str(&allowed_origin).unwrap())
+    //     .allow_methods([http::Method::GET, http::Method::POST])
+    //     .allow_credentials(true);
+
     let app = Router::new()
         .route("/", get(index))
         .route("/auth/google", get(google_auth))
         .route("/auth/authorized", get(login_authorized))
         .route("/protected", get(protected))
         .route("/logout", get(logout))
+        // .layer(cors)
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
@@ -227,10 +247,6 @@ async fn index(user: Option<User>) -> impl IntoResponse {
     }
 }
 
-use rand::{thread_rng, Rng};
-use urlencoding::encode;
-use chrono::{DateTime, Duration, Utc};
-
 #[derive(Serialize, Deserialize)]
 struct CsrfData {
     csrf_token: String,
@@ -249,7 +265,6 @@ async fn google_auth(
         .map(char::from)
         .collect::<String>();
 
-    // let cloned_csrf_token = csrf_token.clone();
     let expires_at = Utc::now() + Duration::seconds(20);
 
     let user_agent = headers
@@ -266,8 +281,6 @@ async fn google_auth(
 
     let mut session = Session::new();
     session.insert("csrf_data", &csrf_data)?;
-    // session.insert("csrf_token", &csrf_token)?;
-    // session.insert("csrf_token_expires_at", &csrf_token_expires_at)?;
     let cloned_session = session.clone();
 
     let csrf_id = store
@@ -281,9 +294,6 @@ async fn google_auth(
 
     println!("session: {:#?}", cloned_session);
     println!("csrf_id: {:#?}", csrf_id);
-    // println!("csrf_token: {:#?}", csrf_token);
-    // println!("expires_at: {:#?}", expires_at);
-    // println!("user_agent: {:#?}", user_agent);
 
     let auth_url = format!(
         "{}?client_id={}&redirect_uri={}&response_type={}&scope={}&state={}&nonce={}&prompt={}&access_type={}&response_mode={}",
@@ -302,7 +312,8 @@ async fn google_auth(
     println!("Auth URL: {:#?}", auth_url);
 
     let cookie = format!(
-        "{}={}; SameSite=Lax; HttpOnly; Path=/",
+        // "{}={}; SameSite=Lax; HttpOnly; Path=/",
+        "{}={}; SameSite=Lax; Secure; HttpOnly; Path=/",
         CSRF_COOKIE_NAME, csrf_id
     );
     let mut headers = HeaderMap::new();
@@ -371,44 +382,8 @@ async fn login_authorized(
     println!("code: {:#?}", query.code);
     println!("Params: {:#?}", params);
 
-    let csrf_id = cookies
-        .get(CSRF_COOKIE_NAME)
-        .ok_or_else(|| anyhow::anyhow!("No session cookie found"))?;
-    let session = store
-        .load_session(csrf_id.to_string())
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-
-    println!("CSRF ID: {:#?}", csrf_id);
-    println!("Session: {:#?}", session);
-
-    let csrf_data: CsrfData = session
-        .get("csrf_data")
-        .ok_or_else(|| anyhow::anyhow!("No CSRF data in session"))?;
-    if query.state != csrf_data.csrf_token {
-        return Err(anyhow::anyhow!("CSRF token mismatch").into());
-    }
-    println!("CSRF token: {:#?}", csrf_data.csrf_token);
-    println!("State: {:#?}", query.state);
-
-    if Utc::now() > csrf_data.expires_at {
-        return Err(anyhow::anyhow!("CSRF token expired").into());
-    }
-    println!("Now: {:#?}", Utc::now());
-    println!("CSRF token expires at: {:#?}", csrf_data.expires_at);
-
-    let user_agent = headers
-    .get(axum::http::header::USER_AGENT)
-    .and_then(|h| h.to_str().ok())
-    .unwrap_or("Unknown")
-    .to_string();
-
-    if user_agent != csrf_data.user_agent {
-        // return Err(anyhow::anyhow!("User agent mismatch").into());
-        return Err(anyhow::anyhow!("Funny thing happend").into());
-    }
-    println!("User agent: {:#?}", user_agent);
-    println!("CSRF user agent: {:#?}", csrf_data.user_agent);
+    validate_origin(&headers, &params.auth_url).await?;
+    csrf_checks(cookies, &store, &query, headers).await?;
 
     let (access_token, id_token) = exchange_code_for_token(params, query.code).await?;
     println!("Access Token: {:#?}", access_token);
@@ -421,6 +396,68 @@ async fn login_authorized(
     let headers = set_coockie(session_id)?;
 
     Ok((headers, Redirect::to("/")))
+}
+
+async fn validate_origin(headers: &HeaderMap, auth_url: &str) -> Result<(), AppError> {
+    let parsed_url = Url::parse(&auth_url).expect("Invalid URL");
+    let scheme = parsed_url.scheme();
+    let host = parsed_url.host_str().unwrap_or_default();
+    let port = parsed_url
+        .port()
+        .map_or("".to_string(), |p| format!(":{}", p));
+    let expected_origin = format!("{}://{}{}", scheme, host, port);
+
+    let origin = headers
+        .get("Origin")
+        .or_else(|| headers.get("Referer"))
+        .and_then(|h| h.to_str().ok());
+
+    match origin {
+        Some(origin) if origin.starts_with(&expected_origin) => Ok(()),
+        _ => Err(anyhow::anyhow!("Invalid origin").into()),
+    }
+}
+
+async fn csrf_checks(
+    cookies: headers::Cookie,
+    store: &MemoryStore,
+    query: &AuthRequest,
+    headers: HeaderMap,
+) -> Result<(), AppError> {
+    let csrf_id = cookies
+        .get(CSRF_COOKIE_NAME)
+        .ok_or_else(|| anyhow::anyhow!("No session cookie found"))?;
+    let session = store
+        .load_session(csrf_id.to_string())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("CSRF Session not found"))?;
+    println!("CSRF ID: {:#?}", csrf_id);
+    println!("Session: {:#?}", session);
+    let csrf_data: CsrfData = session
+        .get("csrf_data")
+        .ok_or_else(|| anyhow::anyhow!("No CSRF data in session"))?;
+    if query.state != csrf_data.csrf_token {
+        return Err(anyhow::anyhow!("CSRF token mismatch").into());
+    }
+    println!("CSRF token: {:#?}", csrf_data.csrf_token);
+    println!("State: {:#?}", query.state);
+    if Utc::now() > csrf_data.expires_at {
+        return Err(anyhow::anyhow!("CSRF token expired").into());
+    }
+    println!("Now: {:#?}", Utc::now());
+    println!("CSRF token expires at: {:#?}", csrf_data.expires_at);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+    if user_agent != csrf_data.user_agent {
+        // return Err(anyhow::anyhow!("User agent mismatch").into());
+        return Err(anyhow::anyhow!("Funny thing happend").into());
+    }
+    println!("User agent: {:#?}", user_agent);
+    println!("CSRF user agent: {:#?}", csrf_data.user_agent);
+    Ok(())
 }
 
 fn set_coockie(session_id: String) -> Result<HeaderMap, AppError> {
