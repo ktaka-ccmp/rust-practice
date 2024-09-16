@@ -27,6 +27,8 @@ use urlencoding::encode;
 // "__Host-" prefix are added to make cookies "host-only".
 static COOKIE_NAME: &str = "__Host-SessionId";
 static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
+static COOKIE_MAX_AGE: i64 = 600; // 10 minutes
+static CSRF_COOKIE_MAX_AGE: i64 = 20; // 20 seconds
 
 #[tokio::main]
 async fn main() {
@@ -90,6 +92,7 @@ fn app_state_init() -> AppState {
         token_url: "https://oauth2.googleapis.com/token".to_string(),
         response_type: ResponseType::Code.as_str().to_string(),
         scope: "openid+email+profile".to_string(),
+        // scope: "email+profile".to_string(),
         nonce: None,
         state: None,
         csrf_token: None,
@@ -266,7 +269,7 @@ async fn google_auth(
         .map(char::from)
         .collect::<String>();
 
-    let expires_at = Utc::now() + Duration::seconds(20);
+    let expires_at = Utc::now() + Duration::seconds(CSRF_COOKIE_MAX_AGE);
 
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)
@@ -281,7 +284,9 @@ async fn google_auth(
     };
 
     let mut session = Session::new();
-    session.insert("csrf_data", &csrf_data)?;
+    session.insert("csrf_data", csrf_data)?;
+    session.set_expiry(expires_at);
+
     let cloned_session = session.clone();
 
     let csrf_id = store
@@ -312,13 +317,14 @@ async fn google_auth(
     // Need to investigate how to use nonce, state, csrf_token.
     println!("Auth URL: {:#?}", auth_url);
 
-    let cookie = format!(
-        // "{}={}; SameSite=Lax; HttpOnly; Path=/",
-        "{}={}; SameSite=Lax; Secure; HttpOnly; Path=/",
-        CSRF_COOKIE_NAME, csrf_id
-    );
     let mut headers = HeaderMap::new();
-    headers.insert(SET_COOKIE, cookie.parse()?);
+    header_set_cookie(
+        &mut headers,
+        CSRF_COOKIE_NAME.to_string(),
+        csrf_id,
+        expires_at,
+        CSRF_COOKIE_MAX_AGE,
+    )?;
 
     Ok((headers, Redirect::to(&auth_url)))
     // Ok(Redirect::to(auth_url.as_str()))
@@ -333,26 +339,45 @@ async fn logout(
     State(store): State<MemoryStore>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
 ) -> Result<impl IntoResponse, AppError> {
+
+    let mut headers = HeaderMap::new();
+    header_set_cookie(
+        &mut headers,
+        COOKIE_NAME.to_string(),
+        "value".to_string(),
+        Utc::now() - Duration::seconds(86400),
+        -86400,
+    )?;
+
+    delete_session_from_store(cookies, COOKIE_NAME.to_string(), &store).await?;
+
+    Ok((headers, Redirect::to("/")))
+}
+
+async fn delete_session_from_store(
+    cookies: headers::Cookie,
+    cookie_name: String,
+    store: &MemoryStore,
+) -> Result<(), AppError> {
     let cookie = cookies
-        .get(COOKIE_NAME)
+        .get(&cookie_name)
         .context("unexpected error getting cookie name")?;
 
-    let session = match store
+    match store
         .load_session(cookie.to_string())
         .await
         .context("failed to load session")?
     {
-        Some(s) => s,
-        // No session active, just redirect
-        None => return Ok(Redirect::to("/")),
+        Some(session) => {
+            store
+                .destroy_session(session)
+                .await
+                .context("failed to destroy session")?;
+        }
+        // No session active
+        None => (),
     };
-
-    store
-        .destroy_session(session)
-        .await
-        .context("failed to destroy session")?;
-
-    Ok(Redirect::to("/"))
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,7 +409,18 @@ async fn login_authorized(
     println!("Params: {:#?}", params);
 
     validate_origin(&headers, &params.auth_url).await?;
-    csrf_checks(cookies, &store, &query, headers).await?;
+    csrf_checks(cookies.clone(), &store, &query, headers).await?;
+
+    let mut headers = HeaderMap::new();
+    header_set_cookie(
+        &mut headers,
+        CSRF_COOKIE_NAME.to_string(),
+        "value".to_string(),
+        Utc::now() - Duration::seconds(86400),
+        -86400,
+    )?;
+
+    delete_session_from_store(cookies, CSRF_COOKIE_NAME.to_string(), &store).await?;
 
     let (access_token, id_token) = exchange_code_for_token(params, query.code).await?;
     println!("Access Token: {:#?}", access_token);
@@ -392,9 +428,17 @@ async fn login_authorized(
 
     let user_data = fetch_user_data_from_google(access_token).await?;
 
-    let session_id = create_and_store_session(user_data, store).await?;
-
-    let headers = set_coockie(session_id)?;
+    let max_age = COOKIE_MAX_AGE;
+    let expires_at = Utc::now() + Duration::seconds(max_age);
+    let session_id = create_and_store_session(user_data, &store, expires_at).await?;
+    header_set_cookie(
+        &mut headers,
+        COOKIE_NAME.to_string(),
+        session_id,
+        expires_at,
+        max_age,
+    )?;
+    // println!("Headers: {:#?}", headers);
 
     Ok((headers, Redirect::to("/")))
 }
@@ -461,22 +505,33 @@ async fn csrf_checks(
     Ok(())
 }
 
-fn set_coockie(session_id: String) -> Result<HeaderMap, AppError> {
-    let cookie = format!("{COOKIE_NAME}={session_id}; SameSite=Lax; Path=/");
+fn header_set_cookie(
+    headers: &mut HeaderMap,
+    name: String,
+    value: String,
+    _expires_at: DateTime<Utc>,
+    max_age: i64,
+) -> Result<&HeaderMap, AppError> {
+    let cookie =
+        format!("{name}={value}; SameSite=Lax; Secure; HttpOnly; Path=/; Max-Age={max_age}");
     println!("Cookie: {:#?}", cookie);
-    let mut headers = HeaderMap::new();
-    headers.insert(
+    headers.append(
         SET_COOKIE,
         cookie.parse().context("failed to parse cookie")?,
     );
     Ok(headers)
 }
 
-async fn create_and_store_session(user_data: User, store: MemoryStore) -> Result<String, AppError> {
+async fn create_and_store_session(
+    user_data: User,
+    store: &MemoryStore,
+    expires_at: DateTime<Utc>,
+) -> Result<String, AppError> {
     let mut session = Session::new();
     session
         .insert("user", &user_data)
         .context("failed in inserting serialized value into session")?;
+    session.set_expiry(expires_at);
     println!("Session: {:#?}", session);
     let session_id = store
         .store_session(session)
@@ -551,6 +606,7 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let store = MemoryStore::from_ref(state);
 
+        println!("Retrieving cookies");
         let cookies = parts
             .extract::<TypedHeader<headers::Cookie>>()
             .await
@@ -561,6 +617,7 @@ where
                 },
                 _ => panic!("unexpected error getting cookies: {e}"),
             })?;
+        // println!("Cookies: {:#?}", cookies);
         let session_cookie = cookies.get(COOKIE_NAME).ok_or(AuthRedirect)?;
 
         // Retrieve session from store
@@ -570,6 +627,7 @@ where
             .unwrap()
             .ok_or(AuthRedirect)?;
 
+        // println!("Loaded Session: {:#?}", session);
         // Retrieve user data from session
         let user = session.get::<User>("user").ok_or(AuthRedirect)?;
 
