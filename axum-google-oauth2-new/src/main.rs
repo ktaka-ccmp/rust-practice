@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-static COOKIE_NAME: &str = "SESSION";
+static COOKIE_NAME: &str = "SessionId";
+static CSRF_COOKIE_NAME: &str = "CsrfId";
 
 #[tokio::main]
 async fn main() {
@@ -226,12 +227,63 @@ async fn index(user: Option<User>) -> impl IntoResponse {
     }
 }
 
+use rand::{thread_rng, Rng};
 use urlencoding::encode;
+use chrono::{DateTime, Duration, Utc};
 
-async fn google_auth(State(mut params): State<OAuth2Params>) -> impl IntoResponse {
+#[derive(Serialize, Deserialize)]
+struct CsrfData {
+    csrf_token: String,
+    expires_at: DateTime<Utc>,
+    user_agent: String,
+}
+
+async fn google_auth(
+    State(mut params): State<OAuth2Params>,
+    State(store): State<MemoryStore>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    let csrf_token = thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect::<String>();
+
+    // let cloned_csrf_token = csrf_token.clone();
+    let expires_at = Utc::now() + Duration::seconds(20);
+
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    let csrf_data = CsrfData {
+        csrf_token: csrf_token.clone(),
+        expires_at,
+        user_agent,
+    };
+
+    let mut session = Session::new();
+    session.insert("csrf_data", &csrf_data)?;
+    // session.insert("csrf_token", &csrf_token)?;
+    // session.insert("csrf_token_expires_at", &csrf_token_expires_at)?;
+    let cloned_session = session.clone();
+
+    let csrf_id = store
+        .store_session(session)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Failed to store session"))?;
+
     params.nonce = Some("some_nonce".to_string());
-    params.csrf_token = Some("some_csrf_token".to_string());
-    params.state = Some("some_state".to_string());
+    params.csrf_token = Some(csrf_token.clone());
+    params.state = Some(csrf_token);
+
+    println!("session: {:#?}", cloned_session);
+    println!("csrf_id: {:#?}", csrf_id);
+    // println!("csrf_token: {:#?}", csrf_token);
+    // println!("expires_at: {:#?}", expires_at);
+    // println!("user_agent: {:#?}", user_agent);
 
     let auth_url = format!(
         "{}?client_id={}&redirect_uri={}&response_type={}&scope={}&state={}&nonce={}&prompt={}&access_type={}&response_mode={}",
@@ -247,9 +299,17 @@ async fn google_auth(State(mut params): State<OAuth2Params>) -> impl IntoRespons
         params.response_mode.as_ref().unwrap().as_str(),
     );
     // Need to investigate how to use nonce, state, csrf_token.
-
     println!("Auth URL: {:#?}", auth_url);
-    Redirect::to(auth_url.as_str())
+
+    let cookie = format!(
+        "{}={}; SameSite=Lax; HttpOnly; Path=/",
+        CSRF_COOKIE_NAME, csrf_id
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(SET_COOKIE, cookie.parse()?);
+
+    Ok((headers, Redirect::to(&auth_url)))
+    // Ok(Redirect::to(auth_url.as_str()))
 }
 
 // Valid user session required. If there is none, redirect to the auth page
@@ -284,11 +344,10 @@ async fn logout(
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct AuthRequest {
     code: String,
     state: String,
-    id_token: Option<String>,
+    _id_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -305,10 +364,51 @@ async fn login_authorized(
     Query(query): Query<AuthRequest>,
     State(store): State<MemoryStore>,
     State(params): State<OAuth2Params>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
     println!("Query: {:#?}", query);
     println!("code: {:#?}", query.code);
     println!("Params: {:#?}", params);
+
+    let csrf_id = cookies
+        .get(CSRF_COOKIE_NAME)
+        .ok_or_else(|| anyhow::anyhow!("No session cookie found"))?;
+    let session = store
+        .load_session(csrf_id.to_string())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+    println!("CSRF ID: {:#?}", csrf_id);
+    println!("Session: {:#?}", session);
+
+    let csrf_data: CsrfData = session
+        .get("csrf_data")
+        .ok_or_else(|| anyhow::anyhow!("No CSRF data in session"))?;
+    if query.state != csrf_data.csrf_token {
+        return Err(anyhow::anyhow!("CSRF token mismatch").into());
+    }
+    println!("CSRF token: {:#?}", csrf_data.csrf_token);
+    println!("State: {:#?}", query.state);
+
+    if Utc::now() > csrf_data.expires_at {
+        return Err(anyhow::anyhow!("CSRF token expired").into());
+    }
+    println!("Now: {:#?}", Utc::now());
+    println!("CSRF token expires at: {:#?}", csrf_data.expires_at);
+
+    let user_agent = headers
+    .get(axum::http::header::USER_AGENT)
+    .and_then(|h| h.to_str().ok())
+    .unwrap_or("Unknown")
+    .to_string();
+
+    if user_agent != csrf_data.user_agent {
+        // return Err(anyhow::anyhow!("User agent mismatch").into());
+        return Err(anyhow::anyhow!("Funny thing happend").into());
+    }
+    println!("User agent: {:#?}", user_agent);
+    println!("CSRF user agent: {:#?}", csrf_data.user_agent);
 
     let (access_token, id_token) = exchange_code_for_token(params, query.code).await?;
     println!("Access Token: {:#?}", access_token);
@@ -449,7 +549,9 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         tracing::error!("Application error: {:#}", self.0);
 
-        (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
+        // (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
+        let message = self.0.to_string();
+        (StatusCode::INTERNAL_SERVER_ERROR, message).into_response()
     }
 }
 
