@@ -24,6 +24,10 @@ use chrono::{DateTime, Duration, Utc};
 use rand::{thread_rng, Rng};
 use urlencoding::encode;
 
+static AUTH_URL : &str = "https://accounts.google.com/o/oauth2/v2/auth";
+static TOKEN_URL : &str = "https://oauth2.googleapis.com/token";
+static SCOPE : &str = "openid+email+profile";
+
 // "__Host-" prefix are added to make cookies "host-only".
 static COOKIE_NAME: &str = "__Host-SessionId";
 static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
@@ -88,11 +92,10 @@ fn app_state_init() -> AppState {
             "{}/auth/authorized",
             env::var("ORIGIN").expect("Missing ORIGIN!")
         ),
-        auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
-        token_url: "https://oauth2.googleapis.com/token".to_string(),
+        auth_url: AUTH_URL.to_string(),
+        token_url: TOKEN_URL.to_string(),
         response_type: ResponseType::Code.as_str().to_string(),
-        scope: "openid+email+profile".to_string(),
-        // scope: "email+profile".to_string(),
+        scope: SCOPE.to_string(),
         nonce: None,
         state: None,
         csrf_token: None,
