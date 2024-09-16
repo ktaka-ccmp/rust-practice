@@ -24,8 +24,9 @@ use chrono::{DateTime, Duration, Utc};
 use rand::{thread_rng, Rng};
 use urlencoding::encode;
 
-static COOKIE_NAME: &str = "SessionId";
-static CSRF_COOKIE_NAME: &str = "CsrfId";
+// "__Host-" prefix are added to make cookies "host-only".
+static COOKIE_NAME: &str = "__Host-SessionId";
+static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
 
 #[tokio::main]
 async fn main() {
