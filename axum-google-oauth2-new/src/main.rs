@@ -24,6 +24,10 @@ use chrono::{DateTime, Duration, Utc};
 use rand::{thread_rng, Rng};
 use urlencoding::encode;
 
+// use askama::Template;
+use askama_axum::Template;
+use axum::response::Html;
+
 static AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 static TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 static SCOPE: &str = "openid+email+profile";
@@ -62,7 +66,6 @@ async fn main() {
         .route("/auth/authorized", get(login_authorized))
         .route("/protected", get(protected))
         .route("/logout", get(logout))
-        // .route("/popopen", get(popup_open))
         .route("/popup_close", get(popup_close))
         // .layer(cors)
         .with_state(app_state);
@@ -245,124 +248,32 @@ struct User {
     verified_email: bool,
 }
 
-// Session is optional
-async fn _index(user: Option<User>) -> impl IntoResponse {
-    match user {
-        Some(u) => format!(
-            "Hey {}! You're logged in!\nYou may now access `/protected`.\nLog out with `/logout`.",
-            u.name
-        ),
-        None => "You're not logged in.\nVisit `/auth/google` to do so.".to_string(),
-    }
+#[derive(Template)]
+#[template(path = "index_user.j2")]
+struct IndexTemplateUser<'a> {
+    message: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "index_anon.j2")]
+struct IndexTemplateAnon<'a> {
+    message: &'a str,
 }
 
 async fn index(user: Option<User>) -> impl IntoResponse {
     match user {
         Some(u) => {
             let message = format!(
-            "Hey {}! You're logged in!\nYou may now access `/protected`.\nLog out with `/logout`.",
-            u.name);
-
-            let html = r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Index Page</title>
-</head>
-<body>
-<div>
-    <button onclick="openLogout()">Logout</button>
-    <script>
-        function openLogout() {
-            window.location.href = "/logout";
-        }
-    </script>
-</div>
-</body>
-</html>
-"#
-.to_string();
-
-        Response::builder()
-        .header("Content-Type", "text/html")
-        .body(html)
-        .unwrap()
+                "Hey {}! You're logged in!",
+                u.name
+            );
+            let template = IndexTemplateUser { message: &message };
+            (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
         None => {
-            let _message = format!(
-                "You're not logged in!\nLog in with `/auth/google`.\nYou may also access `/popup_open`.");
-            let html = r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Index Page</title>
-</head>
-<body>
-<div>
-    <h1>Welcome to the Index Page</h1>
-    <p>{message}</p>
-</div>
-
-<div>
-    <button onclick="openPopup()">Open Popup</button>
-
-<script>
-        let popupWindow;
-        let isReloading = false;
-
-        function openPopup() {
-            popupWindow = window.open(
-                `/auth/google`,
-                "PopupWindow",
-                "width=700,height=800,resizable=yes,scrollbars=yes"
-            );
-
-            // Set up an interval to check if the popup has returned to our origin
-            const checkInterval = setInterval(() => {
-              if (popupWindow.closed) {
-                    clearInterval(checkInterval);
-                    handlePopupClosed();
-                }
-            }, 100);  // Check every 100ms
-        }
-
-        function handlePopupClosed() {
-            if (isReloading) return;  // Prevent multiple reloads
-            isReloading = true;
-
-            const statusElement = document.getElementById('status');
-            if (statusElement) {
-                statusElement.textContent = 'Popup closed. Reloading parent...';
-            }
-
-            // Reload the parent window
-            setTimeout(() => {
-                window.location.reload();
-            }, 100);  // Wait for 1 second before reloading
-        }
-
-        // Add an unload event listener to handle page navigation
-        window.addEventListener('unload', () => {
-            if (popupWindow && !popupWindow.closed) {
-                popupWindow.close();
-            }
-        });
-    </script>
-</div>
-        
-</body>
-</html>
-"#
-            .to_string();
-
-            Response::builder()
-                .header("Content-Type", "text/html")
-                .body(html)
-                .unwrap()
+            let message = "You're not logged in.\nVisit `/auth/google` to do so.".to_string();
+            let template = IndexTemplateAnon {message: &message };
+            (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
     }
 }
