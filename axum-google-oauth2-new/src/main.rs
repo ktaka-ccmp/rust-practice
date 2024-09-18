@@ -315,7 +315,7 @@ async fn index(user: Option<User>) -> impl IntoResponse {
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
         None => {
-            let message = "You're not logged in.\nVisit `/auth/google` to do so.".to_string();
+            let message = "You're not logged in.\nClick the Login button below.".to_string();
             let template = IndexTemplateAnon { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
@@ -688,7 +688,8 @@ struct AuthRedirect;
 
 impl IntoResponse for AuthRedirect {
     fn into_response(self) -> Response {
-        Redirect::temporary("/auth/google").into_response()
+        // Redirect::temporary("/auth/google").into_response()
+        Redirect::temporary("/").into_response()
     }
 }
 
