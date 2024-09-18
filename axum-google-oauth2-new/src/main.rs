@@ -81,7 +81,7 @@ async fn main() {
         .with_state(app_state);
 
     let ports = Ports {
-        http: 3000,
+        http: 3001,
         https: 3443,
     };
 
@@ -94,20 +94,12 @@ async fn main() {
 
 fn spawn_http_server(port: u16, app: Router) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        tracing::debug!("HTTP server listening on {}:{}", addr, port);
+        axum_server::bind(addr)
+            .serve(app.into_make_service())
             .await
-            .context("failed to bind TcpListener")
             .unwrap();
-
-        tracing::debug!(
-            "listening on {}",
-            listener
-                .local_addr()
-                .context("failed to return local address")
-                .unwrap()
-        );
-
-        axum::serve(listener, app).await.unwrap();
     })
 }
 
@@ -124,8 +116,8 @@ fn spawn_https_server(port: u16, app: Router) -> JoinHandle<()> {
         .await
         .unwrap();
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        tracing::debug!("HTTPS server listening on {}", addr);
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        tracing::debug!("HTTPS server listening on {}:{}", addr, port);
         axum_server::bind_rustls(addr, config)
             .serve(app.into_make_service())
             .await
