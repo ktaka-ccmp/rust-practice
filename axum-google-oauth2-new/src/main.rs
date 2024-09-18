@@ -133,54 +133,6 @@ fn spawn_https_server(port: u16, app: Router) -> JoinHandle<()> {
     })
 }
 
-// #[tokio::main]
-async fn _main() {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "example_oauth=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
-    let app_state = app_state_init();
-
-    // CorsLayer is not needed unless frontend is coded in JavaScript and is hosted on a different domain.
-
-    // let allowed_origin = env::var("ORIGIN").expect("Missing ORIGIN!");
-    // let allowed_origin = format!("http://localhost:3000");
-
-    // let cors = CorsLayer::new()
-    //     .allow_origin(HeaderValue::from_str(&allowed_origin).unwrap())
-    //     .allow_methods([http::Method::GET, http::Method::POST])
-    //     .allow_credentials(true);
-
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/auth/google", get(google_auth))
-        .route("/auth/authorized", get(login_authorized))
-        .route("/protected", get(protected))
-        .route("/logout", get(logout))
-        .route("/popup_close", get(popup_close))
-        // .layer(cors)
-        .with_state(app_state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await
-        .context("failed to bind TcpListener")
-        .unwrap();
-
-    tracing::debug!(
-        "listening on {}",
-        listener
-            .local_addr()
-            .context("failed to return local address")
-            .unwrap()
-    );
-
-    axum::serve(listener, app).await.unwrap();
-}
-
 fn app_state_init() -> AppState {
     // `MemoryStore` is just used as an example. Don't use this in production.
     let store = MemoryStore::new();
