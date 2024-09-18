@@ -28,6 +28,10 @@ use urlencoding::encode;
 use askama_axum::Template;
 use axum::response::Html;
 
+use axum_server::tls_rustls::RustlsConfig;
+use std::{net::SocketAddr, path::PathBuf};
+use tokio::task::JoinHandle;
+
 static AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 static TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 static SCOPE: &str = "openid+email+profile";
@@ -38,8 +42,99 @@ static CSRF_COOKIE_NAME: &str = "__Host-CsrfId";
 static COOKIE_MAX_AGE: i64 = 600; // 10 minutes
 static CSRF_COOKIE_MAX_AGE: i64 = 20; // 20 seconds
 
+#[derive(Clone, Copy)]
+struct Ports {
+    http: u16,
+    https: u16,
+}
+
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("{}=debug", env!("CARGO_CRATE_NAME")).into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    let app_state = app_state_init();
+
+    // CorsLayer is not needed unless frontend is coded in JavaScript and is hosted on a different domain.
+
+    // let allowed_origin = env::var("ORIGIN").expect("Missing ORIGIN!");
+    // let allowed_origin = format!("http://localhost:3000");
+
+    // let cors = CorsLayer::new()
+    //     .allow_origin(HeaderValue::from_str(&allowed_origin).unwrap())
+    //     .allow_methods([http::Method::GET, http::Method::POST])
+    //     .allow_credentials(true);
+
+    let app = Router::new()
+        .route("/", get(index))
+        .route("/auth/google", get(google_auth))
+        .route("/auth/authorized", get(login_authorized))
+        .route("/protected", get(protected))
+        .route("/logout", get(logout))
+        .route("/popup_close", get(popup_close))
+        // .layer(cors)
+        .with_state(app_state);
+
+    let ports = Ports {
+        http: 3000,
+        https: 3443,
+    };
+
+    let http_server = spawn_http_server(ports.http, app.clone());
+    let https_server = spawn_https_server(ports.https, app);
+
+    // Wait for both servers to complete (which they never will in this case)
+    tokio::try_join!(http_server, https_server).unwrap();
+}
+
+fn spawn_http_server(port: u16, app: Router) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+            .await
+            .context("failed to bind TcpListener")
+            .unwrap();
+
+        tracing::debug!(
+            "listening on {}",
+            listener
+                .local_addr()
+                .context("failed to return local address")
+                .unwrap()
+        );
+
+        axum::serve(listener, app).await.unwrap();
+    })
+}
+
+fn spawn_https_server(port: u16, app: Router) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let config = RustlsConfig::from_pem_file(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("self_signed_certs")
+                .join("cert.pem"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("self_signed_certs")
+                .join("key.pem"),
+        )
+        .await
+        .unwrap();
+
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        tracing::debug!("HTTPS server listening on {}", addr);
+        axum_server::bind_rustls(addr, config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    })
+}
+
+// #[tokio::main]
+async fn _main() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -263,16 +358,13 @@ struct IndexTemplateAnon<'a> {
 async fn index(user: Option<User>) -> impl IntoResponse {
     match user {
         Some(u) => {
-            let message = format!(
-                "Hey {}! You're logged in!",
-                u.name
-            );
+            let message = format!("Hey {}! You're logged in!", u.name);
             let template = IndexTemplateUser { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
         None => {
             let message = "You're not logged in.\nVisit `/auth/google` to do so.".to_string();
-            let template = IndexTemplateAnon {message: &message };
+            let template = IndexTemplateAnon { message: &message };
             (StatusCode::OK, Html(template.render().unwrap())).into_response()
         }
     }

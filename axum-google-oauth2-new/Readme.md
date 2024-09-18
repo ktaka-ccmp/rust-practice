@@ -9,9 +9,10 @@ ngrok http 3000
 ngrokのURLをORIGINに設定
 
 ```text
-export ORIGIN="https://xxxxx.ngrok-free.app"
 export CLIENT_ID=$client_id
 export CLIENT_SECRET=$client_secret
+export ORIGIN="https://xxxxx.ngrok-free.app"
+# or export ORIGIN='https://localhost:3443'
 
 cargo watch -x run
 ```
