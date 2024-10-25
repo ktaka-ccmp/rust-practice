@@ -14,6 +14,7 @@
 use tokio::signal::unix::{signal, SignalKind};
 use std::time::Duration;
 use tokio::sync::watch;
+use std::process;
 
 async fn handle_signals(tx: watch::Sender<bool>) {
     let mut sigint = signal(SignalKind::interrupt()).unwrap();
@@ -26,11 +27,9 @@ async fn handle_signals(tx: watch::Sender<bool>) {
         tokio::select! {
             _ = sigint.recv() => {
                 println!("Received SIGINT");
-                flag = !flag;
-                tx.send(flag).unwrap();
                 // tokio::time::sleep(Duration::from_secs(1)).await;
                 // tx.send(false).unwrap();
-                // break;
+                break;
             }
             _ = sigterm.recv() => {
                 println!("Received SIGTERM");
@@ -40,6 +39,8 @@ async fn handle_signals(tx: watch::Sender<bool>) {
             _ = sighup.recv() => {
                 println!("Received SIGHUP");
                 // Handle SIGHUP (e.g., reload configuration)
+                flag = !flag;
+                tx.send(flag).unwrap();
             }
         }
     }
@@ -66,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("Main task resumed.");
             }
+            print!("PID: {}, ", process::id());
             println!("main loop");
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
