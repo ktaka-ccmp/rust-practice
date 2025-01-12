@@ -1,0 +1,23 @@
+[package]
+name = "calculator-grpc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tonic = "0.12.3"
+tokio = { version = "1.43.0", features = ["full"] }
+prost = "0.13.4"
+tonic-reflection = "0.12.3"
+tonic-web = "0.12.3"
+tower-http = { version = "0.6.2", features = ["cors"] }
+
+[build-dependencies]
+tonic-build = "0.12.3"
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
