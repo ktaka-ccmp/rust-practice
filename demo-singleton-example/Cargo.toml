@@ -1,0 +1,11 @@
+[package]
+name = "demo-singleton-example"
+version = "0.1.0"
+edition = "2021"
+description = "Demo of LazyLock with signal handling in Rust"
+
+[dependencies]
+tokio = { version = "1.36.0", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+libc = "0.2.153"
