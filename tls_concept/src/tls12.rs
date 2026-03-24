@@ -135,14 +135,14 @@ fn main() {
 
     let message = b"GET / HTTP/1.1\r\nHost: example.com";
     let iv: [u8; 12] = rand::random();
-    let nonce = Nonce::from_slice(&iv);
+    let nonce = Nonce::from(iv);
 
     let cipher_enc = Aes256Gcm::new_from_slice(&client_session_key).unwrap();
-    let encrypted = cipher_enc.encrypt(nonce, message.as_ref()).unwrap();
+    let encrypted = cipher_enc.encrypt(&nonce, message.as_ref()).unwrap();
     println!("暗号文: {}...", short(&B64.encode(&encrypted)));
 
     let cipher_dec = Aes256Gcm::new_from_slice(&server_session_key).unwrap();
-    let decrypted = cipher_dec.decrypt(nonce, encrypted.as_slice()).unwrap();
+    let decrypted = cipher_dec.decrypt(&nonce, encrypted.as_slice()).unwrap();
     println!("復号: {}", String::from_utf8(decrypted).unwrap());
 }
 
